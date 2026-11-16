@@ -1,0 +1,62 @@
+name: 打包 APK
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 有签名密钥（仓库 Secrets 里的 KAVI_KEYSTORE_BASE64、KAVI_KEYSTORE_PASSWORD）就打正式包，新版能直接覆盖安装；
+      # 没有就打 debug 包：能装能用，但每次更新要先卸载旧的
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KAVI_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KAVI_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/kavi.keystore"
+            echo "KAVI_KEYSTORE_FILE=$RUNNER_TEMP/kavi.keystore" >> "$GITHUB_ENV"
+            echo "KAVI_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "VARIANT=release" >> "$GITHUB_ENV"
+          else
+            echo "::warning::没有签名密钥，这次打的是 debug 包"
+            echo "VARIANT=debug" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest
+          if [ "$VARIANT" = release ]; then ./gradlew assembleRelease; else ./gradlew assembleDebug; fi
+          cp app/build/outputs/apk/$VARIANT/app-$VARIANT.apk DS-Chat-v1.0.${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DS-Chat-apk
+          path: DS-Chat-*.apk
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: DS Chat v1.0.${{ github.run_number }}
+          make_latest: true
+          files: DS-Chat-*.apk

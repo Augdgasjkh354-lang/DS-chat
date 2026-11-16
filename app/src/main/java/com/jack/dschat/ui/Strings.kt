@@ -1,0 +1,122 @@
+package com.jack.dschat.ui
+
+import androidx.compose.runtime.staticCompositionLocalOf
+import com.jack.dschat.data.Group
+
+/** 界面文字。语言在 App 里切换（设置 → 语言），所以不走系统的 strings.xml */
+open class Strings {
+    open val greeting = "你好，我能帮什么忙吗？"
+    open val inputHint = "发消息…"
+    open val deepThink = "深度思考"
+    open val smartSearch = "智能搜索"
+    open val thinking = "思考中…"
+    open fun thought(seconds: Int) = "已深度思考（用时 $seconds 秒）"
+    open val copy = "复制"
+    open val copied = "已复制"
+    open val regenerate = "重新生成"
+    open val notReady = "演示版暂未开放"
+
+    open val searchHint = "搜索对话内容…"
+    open val noChats = "还没有对话"
+    open val noResults = "没有找到相关对话"
+    open val rename = "重命名"
+    open val delete = "删除"
+    open fun deleteCount(n: Int) = "删除（$n）"
+    open val cancel = "取消"
+    open val ok = "确定"
+    open val userName = "Jack"
+    open fun group(g: Group) = when (g) {
+        Group.Today -> "今天"
+        Group.Yesterday -> "昨天"
+        Group.Week -> "7 天内"
+        Group.Month -> "30 天内"
+        is Group.YearMonth -> "${g.year}年${g.month}月"
+    }
+
+    open val settings = "设置"
+    open val sectionAccount = "账户"
+    open val account = "账号管理"
+    open val data = "数据管理"
+    open val sectionApp = "应用"
+    open val language = "语言"
+    open val languageName = "简体中文"
+    open val appearance = "外观"
+    open val themeSystem = "系统"
+    open val themeLight = "浅色"
+    open val themeDark = "深色"
+    open val fontSize = "字体大小"
+    open val personalize = "个性化"
+    open val sectionVoice = "语音"
+    open val voice = "朗读音色"
+    open val sectionAbout = "关于"
+    open val checkUpdate = "检查更新"
+    open val terms = "服务协议"
+    open val fontPreview = "拖动下面的滑块调整字体大小。这段文字会跟着变，方便你看效果。"
+    open val small = "小"
+    open val large = "大"
+    open val standard = "标准"
+    open val deleteAll = "删除所有对话"
+    open val deleteAllConfirm = "所有对话都会被删除，无法恢复。"
+    open val deleteConfirm = "删除后无法恢复。"
+    open fun chatCount(n: Int) = "共 $n 个对话，保存在这台手机上"
+}
+
+object Chinese : Strings()
+
+object English : Strings() {
+    override val greeting = "Hi, how can I help?"
+    override val inputHint = "Message…"
+    override val deepThink = "DeepThink"
+    override val smartSearch = "Search"
+    override val thinking = "Thinking…"
+    override fun thought(seconds: Int) = "Thought for $seconds s"
+    override val copy = "Copy"
+    override val copied = "Copied"
+    override val regenerate = "Regenerate"
+    override val notReady = "Not available in this demo"
+
+    override val searchHint = "Search chats…"
+    override val noChats = "No chats yet"
+    override val noResults = "No matching chats"
+    override val rename = "Rename"
+    override val delete = "Delete"
+    override fun deleteCount(n: Int) = "Delete ($n)"
+    override val cancel = "Cancel"
+    override val ok = "OK"
+    override fun group(g: Group) = when (g) {
+        Group.Today -> "Today"
+        Group.Yesterday -> "Yesterday"
+        Group.Week -> "Last 7 days"
+        Group.Month -> "Last 30 days"
+        is Group.YearMonth -> "${g.year}-${g.month.toString().padStart(2, '0')}"
+    }
+
+    override val settings = "Settings"
+    override val sectionAccount = "Account"
+    override val account = "Account"
+    override val data = "Data"
+    override val sectionApp = "App"
+    override val language = "Language"
+    override val languageName = "English"
+    override val appearance = "Appearance"
+    override val themeSystem = "System"
+    override val themeLight = "Light"
+    override val themeDark = "Dark"
+    override val fontSize = "Font size"
+    override val personalize = "Personalization"
+    override val sectionVoice = "Voice"
+    override val voice = "Read-aloud voice"
+    override val sectionAbout = "About"
+    override val checkUpdate = "Check for updates"
+    override val terms = "Terms of service"
+    override val fontPreview = "Drag the slider below to change the font size. This text follows along so you can see the result."
+    override val small = "Small"
+    override val large = "Large"
+    override val standard = "Standard"
+    override val deleteAll = "Delete all chats"
+    override val deleteAllConfirm = "All chats will be deleted. This cannot be undone."
+    override val deleteConfirm = "This cannot be undone."
+    override fun chatCount(n: Int) = "$n chats, stored on this phone"
+}
+
+val LocalStrings = staticCompositionLocalOf<Strings> { Chinese }
