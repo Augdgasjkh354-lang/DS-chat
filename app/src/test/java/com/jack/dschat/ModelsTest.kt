@@ -3,6 +3,7 @@ package com.jack.dschat
 import com.jack.dschat.data.Conversation
 import com.jack.dschat.data.Group
 import com.jack.dschat.data.Message
+import com.jack.dschat.data.fitWithin
 import com.jack.dschat.data.groupOf
 import com.jack.dschat.data.matches
 import com.jack.dschat.data.titleFrom
@@ -43,5 +44,14 @@ class ModelsTest {
     fun 标题取第一行前二十个字() {
         assertEquals("你好", titleFrom("\n  你好  \n第二行"))
         assertEquals("一二三四五六七八九十一二三四五六七八九十…", titleFrom("一二三四五六七八九十一二三四五六七八九十多出来的"))
+    }
+
+    @Test
+    fun 背景图等比缩到长边不超限() {
+        assertEquals(1080 to 1920, fitWithin(1080, 1920, 2000))
+        assertEquals(1500 to 2000, fitWithin(3000, 4000, 2000))
+        assertEquals(2000 to 1000, fitWithin(8000, 4000, 2000))
+        // 特别细长的图，短边不能缩成 0
+        assertEquals(2000 to 1, fitWithin(100000, 10, 2000))
     }
 }

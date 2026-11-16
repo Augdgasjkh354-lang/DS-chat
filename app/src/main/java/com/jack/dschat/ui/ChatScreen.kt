@@ -208,6 +208,10 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val streaming = isLast && vm.generating
+    // 垫着背景图时，回复和思考过程都包进半透明的气泡
+    val plate = if (LocalOnImage.current) {
+        Modifier.clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(colors.card).padding(horizontal = 14.dp, vertical = 10.dp)
+    } else Modifier
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (message.reasoning.isNotEmpty()) {
@@ -232,7 +236,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
                     color = colors.sub,
                     fontSize = 14.sp,
                     lineHeight = 22.sp,
-                    modifier = Modifier.padding(top = 10.dp)
+                    modifier = Modifier.padding(top = 10.dp).then(plate)
                         .drawBehind { drawLine(bar, Offset(1.dp.toPx(), 0f), Offset(1.dp.toPx(), size.height), 2.dp.toPx()) }
                         .padding(start = 14.dp),
                 )
@@ -244,7 +248,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
             TypingDots()
         } else if (message.text.isNotEmpty()) {
             SelectionContainer {
-                Text(message.text, color = colors.text, fontSize = 16.sp, lineHeight = 26.sp)
+                Text(message.text, color = colors.text, fontSize = 16.sp, lineHeight = 26.sp, modifier = plate)
             }
         }
 

@@ -2,6 +2,10 @@ package com.jack.dschat
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import com.jack.dschat.data.BackgroundStore
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -24,6 +28,7 @@ import java.util.UUID
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(app)
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val backgrounds = BackgroundStore(app)
 
     var conversations by mutableStateOf(listOf<Conversation>())
         private set
@@ -47,11 +52,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var search by mutableStateOf(prefs.getBoolean("search", false))
         private set
 
+    /** 聊天背景图；null 是没设，用纯色 */
+    var background by mutableStateOf<ImageBitmap?>(null)
+        private set
+    /** 盖在背景图上的遮罩有多浓，0 到 0.9 */
+    var backgroundDim by mutableFloatStateOf(prefs.getFloat("bgDim", 0.55f))
+        private set
+    /** 背景图的模糊程度，0 到 1 */
+    var backgroundBlur by mutableFloatStateOf(prefs.getFloat("bgBlur", 0f))
+        private set
+
     private var job: Job? = null
 
     val current: Conversation? get() = conversations.firstOrNull { it.id == currentId }
 
     init {
+        viewModelScope.launch { background = withContext(Dispatchers.IO) { backgrounds.load()?.asImageBitmap() } }
         viewModelScope.launch {
             conversations = withContext(Dispatchers.IO) {
                 store.load() ?: Demo.seed(System.currentTimeMillis()).also { store.save(it) }
@@ -64,6 +80,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun updateEnglish(on: Boolean) { english = on; prefs.edit().putBoolean("english", on).apply() }
     fun toggleThink() { think = !think; prefs.edit().putBoolean("think", think).apply() }
     fun toggleSearch() { search = !search; prefs.edit().putBoolean("search", search).apply() }
+
+    /** 换背景图。图片读不出来时调 onFail，原来的背景不动 */
+    fun pickBackground(uri: Uri, onFail: () -> Unit) {
+        viewModelScope.launch {
+            val picked = withContext(Dispatchers.IO) { backgrounds.import(uri)?.asImageBitmap() }
+            if (picked == null) onFail() else background = picked
+        }
+    }
+
+    fun clearBackground() {
+        background = null
+        viewModelScope.launch(Dispatchers.IO) { backgrounds.clear() }
+    }
+
+    fun updateBackgroundDim(value: Float) { backgroundDim = value; prefs.edit().putFloat("bgDim", value).apply() }
+    fun updateBackgroundBlur(value: Float) { backgroundBlur = value; prefs.edit().putFloat("bgBlur", value).apply() }
 
     fun newChat() {
         stop()

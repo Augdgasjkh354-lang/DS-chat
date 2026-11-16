@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -54,7 +55,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.jack.dschat.ui.ChatBackground
 import com.jack.dschat.ui.ChatScreen
+import com.jack.dschat.ui.LocalOnImage
 import com.jack.dschat.ui.Chinese
 import com.jack.dschat.ui.DarkColors
 import com.jack.dschat.ui.English
@@ -165,7 +168,21 @@ private fun Root(vm: ChatViewModel) {
                     .background(colors.bg)
                     .border(1.dp, colors.border.copy(alpha = colors.border.alpha * progress), shape),
             ) {
-                ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady)
+                val image = vm.background
+                if (image == null) {
+                    ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady)
+                } else {
+                    ChatBackground(image, vm.backgroundDim, vm.backgroundBlur, Modifier.fillMaxSize())
+                    // 垫着图的时候，输入框、按钮、气泡都改成半透明，灰字调亮一点
+                    val onImage = colors.copy(
+                        card = colors.card.copy(alpha = 0.72f),
+                        bubble = colors.bubble.copy(alpha = 0.82f),
+                        sub = lerp(colors.sub, colors.text, 0.45f),
+                    )
+                    CompositionLocalProvider(LocalColors provides onImage, LocalOnImage provides true) {
+                        ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady)
+                    }
+                }
                 if (progress > 0f) {
                     // 侧边栏开着的时候，点主页面任何地方都是收起
                     Box(
