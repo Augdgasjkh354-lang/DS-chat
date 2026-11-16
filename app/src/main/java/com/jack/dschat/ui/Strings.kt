@@ -6,6 +6,8 @@ import com.jack.dschat.data.Group
 /** 界面文字。语言在 App 里切换（设置 → 语言），所以不走系统的 strings.xml */
 open class Strings {
     open val greeting = "你好，我能帮什么忙吗？"
+    open val appName = "DS Chat"
+    open val suggestions = listOf("帮我写一封请假邮件", "周末适合去哪儿徒步", "用简单的话解释复利", "给我的猫起个名字")
     open val inputHint = "发消息…"
     open val deepThink = "深度思考"
     open val smartSearch = "智能搜索"
@@ -65,6 +67,7 @@ object Chinese : Strings()
 
 object English : Strings() {
     override val greeting = "Hi, how can I help?"
+    override val suggestions = listOf("Write a leave request email", "Plan a weekend hike", "Explain compound interest simply", "Name my cat")
     override val inputHint = "Message…"
     override val deepThink = "DeepThink"
     override val smartSearch = "Search"

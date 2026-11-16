@@ -1,5 +1,7 @@
 package com.jack.dschat.ui
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -52,11 +54,16 @@ object AppIcons {
     val Edit = line("M5 19h3.5L19 8.5 15.5 5 5 15.5z M13.5 7l3.5 3.5")
     val Check = line("M5 12.5l4.5 4.5L19 7.5", 2.2f)
 
-    /** App 自己的标志：一颗四角星（实心） */
+    /** App 自己的标志：一只写着两行字的对话气泡，蓝紫渐变。要用 Image 画，Icon 会把渐变染成单色 */
     val Logo = ImageVector.Builder(
-        defaultWidth = 48.dp, defaultHeight = 48.dp, viewportWidth = 48f, viewportHeight = 48f,
+        defaultWidth = 32.dp, defaultHeight = 32.dp, viewportWidth = 32f, viewportHeight = 32f,
     ).addPath(
-        pathData = addPathNodes("M24 0C26 14 34 22 48 24C34 26 26 34 24 48C22 34 14 26 0 24C14 22 22 14 24 0z"),
-        fill = SolidColor(Color.Black),
+        pathData = addPathNodes("M16 0a16 16 0 0 1 0 32H3a3 3 0 0 1-3-3V16A16 16 0 0 1 16 0z"),
+        fill = Brush.linearGradient(listOf(Color(0xFF6480FF), Color(0xFFA57CFF)), Offset(0f, 0f), Offset(32f, 32f)),
+    ).addPath(
+        pathData = addPathNodes("M9.5 13h13 M9.5 20h7.5"),
+        stroke = SolidColor(Color.White),
+        strokeLineWidth = 3f,
+        strokeLineCap = StrokeCap.Round,
     ).build()
 }

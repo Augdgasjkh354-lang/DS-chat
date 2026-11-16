@@ -1,6 +1,18 @@
 package com.jack.dschat.ui
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,7 +54,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -69,7 +86,12 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CircleButton(AppIcons.Menu, onClick = onMenu)
-            Spacer(Modifier.weight(1f))
+            Text(
+                vm.current?.title.orEmpty(),
+                color = colors.sub, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            )
             Row(
                 Modifier.clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape),
                 verticalAlignment = Alignment.CenterVertically,
@@ -81,21 +103,62 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit) {
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (messages.isEmpty()) {
-                Column(
-                    Modifier.fillMaxSize().padding(bottom = 48.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Icon(AppIcons.Logo, null, Modifier.size(52.dp), tint = colors.accent)
-                    Spacer(Modifier.height(22.dp))
-                    Text(strings.greeting, color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                }
+                EmptyState(onPick = { vm.send(it) })
             } else {
                 MessageList(vm, messages)
             }
         }
 
         InputPanel(vm, onNotReady)
+    }
+}
+
+/** 还没发消息时：标志带一圈柔光，下面是问候语和几个可以直接点的话题 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EmptyState(onPick: (String) -> Unit) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    Column(
+        Modifier.fillMaxSize().padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Box(Modifier.size(220.dp).background(Brush.radialGradient(listOf(colors.accent2.copy(alpha = if (colors.isDark) 0.22f else 0.16f), Color.Transparent))))
+            Image(AppIcons.Logo, null, Modifier.size(60.dp))
+        }
+        Text(strings.greeting, color = colors.text, fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 0.dp))
+        Spacer(Modifier.height(26.dp))
+        FlowRow(
+            Modifier.padding(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            strings.suggestions.forEach { suggestion ->
+                Text(
+                    suggestion,
+                    color = colors.text.copy(alpha = 0.85f), fontSize = 14.sp, maxLines = 1,
+                    modifier = Modifier.clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape)
+                        .clickable { onPick(suggestion) }.padding(horizontal = 14.dp, vertical = 9.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 回复还没出来时的三个点，轮流变亮 */
+@Composable
+private fun TypingDots() {
+    val colors = LocalColors.current
+    val transition = rememberInfiniteTransition(label = "dots")
+    Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        repeat(3) { index ->
+            val alpha by transition.animateFloat(
+                0.25f, 1f, infiniteRepeatable(tween(520, delayMillis = index * 160), RepeatMode.Reverse), label = "dot",
+            )
+            Box(Modifier.size(7.dp).graphicsLayer { this.alpha = alpha }.clip(CircleShape).background(colors.accent))
+        }
     }
 }
 
@@ -114,7 +177,9 @@ private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
     ) {
         itemsIndexed(messages, key = { _, m -> m.id }) { index, message ->
             val isLast = index == messages.lastIndex
-            if (message.isUser) UserMessage(message) else AssistantMessage(vm, message, isLast)
+            Box(Modifier.animateItem()) {
+                if (message.isUser) UserMessage(message) else AssistantMessage(vm, message, isLast)
+            }
         }
         item(key = "bottom") { Spacer(Modifier.height(12.dp)) }
     }
@@ -130,7 +195,7 @@ private fun UserMessage(message: Message) {
                 color = colors.text,
                 fontSize = 16.sp,
                 lineHeight = 24.sp,
-                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(colors.bubble).padding(horizontal = 16.dp, vertical = 10.dp),
+                modifier = Modifier.clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)).background(colors.bubble).padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }
     }
@@ -149,7 +214,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
             var expanded by rememberSaveable(message.id) { mutableStateOf(true) }
             val thinkingNow = streaming && message.text.isEmpty()
             Row(
-                Modifier.clip(RoundedCornerShape(12.dp)).background(colors.card).clickable { expanded = !expanded }
+                Modifier.clip(CircleShape).background(colors.card).clickable { expanded = !expanded }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -157,9 +222,10 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
                 Spacer(Modifier.width(6.dp))
                 Text(if (thinkingNow) strings.thinking else strings.thought(message.thinkSeconds), color = colors.sub, fontSize = 13.sp)
                 Spacer(Modifier.width(4.dp))
-                Icon(AppIcons.ChevronDown, null, Modifier.size(14.dp).rotate(if (expanded) 180f else 0f), tint = colors.sub)
+                val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
+                Icon(AppIcons.ChevronDown, null, Modifier.size(14.dp).rotate(turn), tint = colors.sub)
             }
-            if (expanded) {
+            AnimatedVisibility(expanded) {
                 val bar = colors.border
                 Text(
                     message.reasoning,
@@ -175,7 +241,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
         }
 
         if (message.text.isEmpty() && message.reasoning.isEmpty() && streaming) {
-            Text("●", color = colors.sub, fontSize = 14.sp)
+            TypingDots()
         } else if (message.text.isNotEmpty()) {
             SelectionContainer {
                 Text(message.text, color = colors.text, fontSize = 16.sp, lineHeight = 26.sp)
@@ -200,6 +266,7 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
     val strings = LocalStrings.current
     var text by rememberSaveable { mutableStateOf("") }
     val shape = RoundedCornerShape(28.dp)
+    val haptic = LocalHapticFeedback.current
 
     Column(
         Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).fillMaxWidth()
@@ -222,24 +289,33 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip(AppIcons.Atom, strings.deepThink, vm.think, Modifier.weight(1f, fill = false)) { vm.toggleThink() }
-                Chip(AppIcons.Globe, strings.smartSearch, vm.search, Modifier.weight(1f, fill = false)) { vm.toggleSearch() }
+                Chip(AppIcons.Atom, strings.deepThink, vm.think, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleThink() }
+                Chip(AppIcons.Globe, strings.smartSearch, vm.search, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleSearch() }
             }
             Spacer(Modifier.width(8.dp))
             Icon(AppIcons.PlusCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
-            Spacer(Modifier.width(4.dp))
-            when {
-                vm.generating -> Box(
-                    Modifier.size(34.dp).clip(CircleShape).background(colors.text).clickable { vm.stop() },
-                    contentAlignment = Alignment.Center,
-                ) { Box(Modifier.size(12.dp).clip(RoundedCornerShape(3.dp)).background(colors.card)) }
+            Spacer(Modifier.width(2.dp))
+            // 右下角的按钮：生成中是停止，有字是发送，否则是语音；切换时淡入淡出
+            Crossfade(if (vm.generating) 0 else if (text.isNotBlank()) 1 else 2, label = "action") { state ->
+                Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                    when (state) {
+                        0 -> Box(
+                            Modifier.size(36.dp).clip(CircleShape).background(colors.text).clickable { vm.stop() },
+                            contentAlignment = Alignment.Center,
+                        ) { Box(Modifier.size(12.dp).clip(RoundedCornerShape(3.dp)).background(colors.card)) }
 
-                text.isNotBlank() -> Box(
-                    Modifier.size(34.dp).clip(CircleShape).background(colors.accent).clickable { vm.send(text); text = "" },
-                    contentAlignment = Alignment.Center,
-                ) { Icon(AppIcons.ArrowUp, null, Modifier.size(20.dp), tint = Color.White) }
+                        1 -> Box(
+                            Modifier.size(36.dp).clip(CircleShape).background(colors.accentBrush).clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                vm.send(text)
+                                text = ""
+                            },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(AppIcons.ArrowUp, null, Modifier.size(20.dp), tint = Color.White) }
 
-                else -> Icon(AppIcons.VoiceCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
+                        else -> Icon(AppIcons.VoiceCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
+                    }
+                }
             }
         }
     }
@@ -248,11 +324,13 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
 @Composable
 private fun Chip(icon: ImageVector, label: String, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val colors = LocalColors.current
-    val content = if (active) colors.accent else colors.text
+    val content by animateColorAsState(if (active) colors.accent else colors.text, label = "chip")
+    val fill by animateColorAsState(if (active) colors.accentBg else Color.Transparent, label = "chipFill")
+    val line by animateColorAsState(if (active) colors.accent.copy(alpha = 0.4f) else colors.border, label = "chipLine")
     Row(
         modifier.clip(CircleShape)
-            .background(if (active) colors.accentBg else Color.Transparent)
-            .border(1.dp, if (active) colors.accent.copy(alpha = 0.35f) else colors.border, CircleShape)
+            .background(fill)
+            .border(1.dp, line, CircleShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,

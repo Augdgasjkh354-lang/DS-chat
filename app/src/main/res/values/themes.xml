@@ -1,6 +1,5 @@
 <resources>
     <style name="Theme.DSChat" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#0E0E0F</item>
+        <item name="android:windowBackground">#0F1014</item>
     </style>
-    <color name="launcher_bg">#4F6EF7</color>
 </resources>

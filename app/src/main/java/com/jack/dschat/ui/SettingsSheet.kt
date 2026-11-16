@@ -203,8 +203,8 @@ private fun DataPage(vm: ChatViewModel) {
             Modifier.fillMaxWidth().clickable(enabled = vm.conversations.isNotEmpty()) { confirm = true }.padding(horizontal = 20.dp, vertical = 18.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(AppIcons.Trash, null, Modifier.size(24.dp), tint = colors.danger)
-            Spacer(Modifier.width(14.dp))
+            Icon(AppIcons.Trash, null, Modifier.size(22.dp), tint = colors.danger)
+            Spacer(Modifier.width(12.dp))
             Text(strings.deleteAll, color = colors.danger, fontSize = 17.sp)
         }
     }
@@ -226,11 +226,11 @@ private fun Section(title: String) {
 
 @Composable
 private fun Card(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(LocalColors.current.group), content = content)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(LocalColors.current.group), content = content)
 }
 
 @Composable
-private fun Divider(inset: androidx.compose.ui.unit.Dp = 58.dp) {
+private fun Divider(inset: androidx.compose.ui.unit.Dp = 64.dp) {
     Box(Modifier.padding(start = inset, end = 16.dp).fillMaxWidth().height(1.dp).background(LocalColors.current.border))
 }
 
@@ -238,10 +238,12 @@ private fun Divider(inset: androidx.compose.ui.unit.Dp = 58.dp) {
 private fun SettingRow(icon: ImageVector, label: String, value: String = "", trailing: ImageVector = AppIcons.ChevronRight, onClick: () -> Unit) {
     val colors = LocalColors.current
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 18.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 16.dp, top = 13.dp, bottom = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, Modifier.size(24.dp), tint = colors.text)
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(colors.accentBg), contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(20.dp), tint = colors.accent)
+        }
         Spacer(Modifier.width(14.dp))
         Text(label, color = colors.text, fontSize = 17.sp, modifier = Modifier.weight(1f))
         if (value.isNotEmpty()) {

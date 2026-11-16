@@ -1,6 +1,7 @@
 package com.jack.dschat.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -69,9 +70,15 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
         .toList()
 
     Column(modifier.statusBarsPadding().navigationBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Image(AppIcons.Logo, null, Modifier.size(26.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(strings.appName, color = colors.text, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            PlainButton(AppIcons.NewChat, onClick = { vm.newChat(); onPick() })
+        }
         // 搜索框
         Row(
-            Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 8.dp).fillMaxWidth()
+            Modifier.padding(start = 16.dp, end = 12.dp, top = 6.dp, bottom = 4.dp).fillMaxWidth()
                 .clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape)
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +145,7 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
                                         },
                                         onLongClick = { if (picking == null) menu = true },
                                     )
-                                    .padding(horizontal = 12.dp, vertical = 13.dp),
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (picking != null) {
@@ -174,6 +181,7 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
 
         // 底栏：平时是用户和设置入口，多选时换成删除 / 取消
         val picking = selected
+        Box(Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(1.dp).background(colors.border))
         Row(
             Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 10.dp).height(48.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -189,8 +197,8 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
                     Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).clickable(onClick = onSettings).padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(Modifier.size(36.dp).clip(CircleShape).background(colors.accentBg), contentAlignment = Alignment.Center) {
-                        Text(strings.userName.take(1), color = colors.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Box(Modifier.size(36.dp).clip(CircleShape).background(colors.accentBrush), contentAlignment = Alignment.Center) {
+                        Text(strings.userName.take(1), color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(Modifier.width(10.dp))
                     Text(strings.userName, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.Medium)

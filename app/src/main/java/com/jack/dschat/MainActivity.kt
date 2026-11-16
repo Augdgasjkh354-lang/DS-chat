@@ -43,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -152,7 +153,8 @@ private fun Root(vm: ChatViewModel) {
                 modifier = Modifier
                     .width(with(LocalDensity.current) { openPx.toDp() })
                     .fillMaxHeight()
-                    .graphicsLayer { alpha = 0.3f + 0.7f * progress },
+                    // 跟着拉开的进度淡入，并从左边轻轻滑进来
+                    .graphicsLayer { alpha = 0.3f + 0.7f * progress; translationX = -24.dp.toPx() * (1f - progress) },
             )
             val shape = RoundedCornerShape(36.dp * progress)
             Box(
@@ -167,7 +169,7 @@ private fun Root(vm: ChatViewModel) {
                 if (progress > 0f) {
                     // 侧边栏开着的时候，点主页面任何地方都是收起
                     Box(
-                        Modifier.fillMaxSize().clickable(
+                        Modifier.fillMaxSize().background(Color.Black.copy(alpha = (if (colors.isDark) 0.35f else 0.12f) * progress)).clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) { settle(false) },
