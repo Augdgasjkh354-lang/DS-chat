@@ -64,5 +64,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
+    // 公式渲染（LaTeX），纯本地，不联网
+    implementation("ru.noties:jlatexmath-android:0.2.0")
+
     testImplementation("junit:junit:4.13.2")
 }

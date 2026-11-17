@@ -6,6 +6,8 @@ import com.jack.dschat.data.Message
 import com.jack.dschat.data.Source
 import com.jack.dschat.ui.Block
 import com.jack.dschat.ui.parseMarkdown
+import com.jack.dschat.ui.inline
+import androidx.compose.ui.text.SpanStyle
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -132,5 +134,35 @@ class DeepSeekTest {
             ),
             blocks,
         )
+    }
+
+    private fun formulas(text: String): Pair<String, List<String>> {
+        val list = mutableListOf<String>()
+        val out = inline(text, SpanStyle(), SpanStyle(), list)
+        return out.text to list
+    }
+
+    @Test
+    fun findsInlineMath() {
+        assertEquals(listOf("E=mc^2"), formulas("质能方程 ${'$'}E=mc^2${'$'} 很有名").second)
+        assertEquals(listOf("\\frac{a}{b}", "x"), formulas("\\(\\frac{a}{b}\\) 和 ${'$'}${'$'}x${'$'}${'$'}").second)
+    }
+
+    @Test
+    fun moneyIsNotMath() {
+        assertEquals(emptyList<String>(), formulas("苹果 ${'$'}5，香蕉 ${'$'}10").second)
+        assertEquals(emptyList<String>(), formulas("价格是 ${'$'} 5 到 ${'$'} 8").second)
+        assertEquals("花了 ${'$'}3", formulas("花了 \\${'$'}3").first)
+    }
+
+    @Test
+    fun parsesBlockMath() {
+        val d = "${'$'}${'$'}"
+        assertEquals(
+            listOf(Block.Paragraph("前面"), Block.Math("a^2+b^2=c^2"), Block.Math("\\int_0^1 x\\,dx"), Block.Paragraph("后面")),
+            parseMarkdown("前面\n$d\na^2+b^2=c^2\n$d\n\\[ \\int_0^1 x\\,dx \\]\n后面"),
+        )
+        // 流式输出时还没闭合：先当普通文字
+        assertEquals(listOf(Block.Paragraph("$d\nx+1")), parseMarkdown("$d\nx+1"))
     }
 }
