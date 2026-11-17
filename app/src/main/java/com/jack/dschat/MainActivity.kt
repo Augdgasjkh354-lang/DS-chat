@@ -65,6 +65,8 @@ import com.jack.dschat.ui.LightColors
 import com.jack.dschat.ui.LocalColors
 import com.jack.dschat.ui.LocalStrings
 import com.jack.dschat.ui.SettingsSheet
+import com.jack.dschat.ui.RolesSheet
+import com.jack.dschat.ui.MemorySheet
 import com.jack.dschat.ui.Sidebar
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -122,6 +124,8 @@ private fun Root(vm: ChatViewModel) {
     val focus = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showRoles by rememberSaveable { mutableStateOf(false) }
+    var showMemory by rememberSaveable { mutableStateOf(false) }
     val notReady = { Toast.makeText(context, strings.notReady, Toast.LENGTH_SHORT).show() }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(colors.side)) {
@@ -134,7 +138,7 @@ private fun Root(vm: ChatViewModel) {
             scope.launch { offset.animateTo(if (open) openPx else 0f, spring(stiffness = Spring.StiffnessMediumLow)) }
         }
 
-        BackHandler(enabled = progress > 0f && !showSettings) { settle(false) }
+        BackHandler(enabled = progress > 0f && !showSettings && !showRoles) { settle(false) }
 
         val drag = rememberDraggableState { delta ->
             scope.launch { offset.snapTo((offset.value + delta).coerceIn(0f, openPx)) }
@@ -153,6 +157,7 @@ private fun Root(vm: ChatViewModel) {
                 vm = vm,
                 onPick = { settle(false) },
                 onSettings = { showSettings = true },
+                onRoles = { showRoles = true },
                 modifier = Modifier
                     .width(with(LocalDensity.current) { openPx.toDp() })
                     .fillMaxHeight()
@@ -170,7 +175,7 @@ private fun Root(vm: ChatViewModel) {
             ) {
                 val image = vm.background
                 if (image == null) {
-                    ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady)
+                    ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady, onRole = { showMemory = true })
                 } else {
                     ChatBackground(image, vm.backgroundDim, vm.backgroundBlur, Modifier.fillMaxSize())
                     // 垫着图的时候，输入框、按钮、气泡都改成半透明，灰字调亮一点
@@ -180,7 +185,7 @@ private fun Root(vm: ChatViewModel) {
                         sub = lerp(colors.sub, colors.text, 0.45f),
                     )
                     CompositionLocalProvider(LocalColors provides onImage, LocalOnImage provides true) {
-                        ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady)
+                        ChatScreen(vm = vm, onMenu = { settle(true) }, onNotReady = notReady, onRole = { showMemory = true })
                     }
                 }
                 if (progress > 0f) {
@@ -201,6 +206,26 @@ private fun Root(vm: ChatViewModel) {
             exit = slideOutVertically { it } + fadeOut(),
         ) {
             SettingsSheet(vm = vm, onClose = { showSettings = false }, onNotReady = notReady)
+        }
+
+        AnimatedVisibility(
+            visible = showRoles,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            RolesSheet(vm = vm, onClose = { showRoles = false }, onStarted = { showRoles = false; settle(false) })
+        }
+
+        val roleChat = vm.current?.takeIf { vm.currentCharacter != null }
+        AnimatedVisibility(
+            visible = showMemory && roleChat != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            // 动画收起的那几帧对话可能已经换了：用最后一个有效的
+            val last = remember { mutableStateOf(roleChat) }
+            if (roleChat != null) last.value = roleChat
+            last.value?.let { MemorySheet(vm, it, onClose = { showMemory = false }) }
         }
     }
 }

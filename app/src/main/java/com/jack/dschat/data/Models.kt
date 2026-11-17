@@ -38,6 +38,15 @@ data class Conversation(
     val title: String,
     val updatedAt: Long,
     val messages: List<Message> = emptyList(),
+    /** 角色扮演对话：扮演的角色；null 是普通对话 */
+    val characterId: String? = null,
+    /** 角色对话的「前情回忆」：更早的对话整理成的摘要，用户能看能改 */
+    val memory: String = "",
+    /** 前面这么多条消息已经整理进回忆，不再原样发给模型 */
+    val memoryUpTo: Int = 0,
+    /** 角色对话自己的深度思考、联网开关（默认关：带工具时创意度不生效） */
+    val think: Boolean = false,
+    val search: Boolean = false,
 )
 
 /** 侧边栏里历史记录的分组 */

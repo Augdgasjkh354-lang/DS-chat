@@ -16,6 +16,15 @@ import androidx.lifecycle.viewModelScope
 import com.jack.dschat.data.ChatStore
 import com.jack.dschat.data.Conversation
 import com.jack.dschat.data.DeepSeek
+import com.jack.dschat.data.Character
+import com.jack.dschat.data.CharacterCard
+import com.jack.dschat.data.CardException
+import com.jack.dschat.data.CharacterStore
+import com.jack.dschat.data.Persona
+import com.jack.dschat.data.RoleMemory
+import com.jack.dschat.data.RolePrompt
+import com.jack.dschat.data.decodeImage
+import android.graphics.BitmapFactory
 import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
@@ -32,6 +41,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(app)
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val backgrounds = BackgroundStore(app)
+    private val roles = CharacterStore(app)
 
     var conversations by mutableStateOf(listOf<Conversation>())
         private set
@@ -80,12 +90,149 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     val current: Conversation? get() = conversations.firstOrNull { it.id == currentId }
 
+    // 角色扮演
+    var characters by mutableStateOf(listOf<Character>())
+        private set
+    var persona by mutableStateOf(Persona())
+        private set
+    /** 角色头像，按角色 ID */
+    var avatars by mutableStateOf(mapOf<String, ImageBitmap>())
+        private set
+    /** 正在整理回忆的对话 ID */
+    var remembering by mutableStateOf<String?>(null)
+        private set
+
+    fun character(id: String?): Character? = id?.let { i -> characters.firstOrNull { it.id == i } }
+    /** 当前对话扮演的角色；角色被删了就当普通对话 */
+    val currentCharacter: Character? get() = character(current?.characterId)
+
+    /** 输入框上的两个开关：角色对话用对话自己的（默认关），普通对话用全局的 */
+    val thinkOn: Boolean get() = if (currentCharacter != null) current!!.think else think
+    val searchOn: Boolean get() = if (currentCharacter != null) current!!.search else search
+
     init {
         viewModelScope.launch { background = withContext(Dispatchers.IO) { backgrounds.load()?.asImageBitmap() } }
         viewModelScope.launch {
             conversations = withContext(Dispatchers.IO) {
                 store.load().orEmpty()
             }
+        }
+        viewModelScope.launch {
+            val (saved, pics) = withContext(Dispatchers.IO) {
+                val saved = roles.load()
+                saved to saved.characters.filter { it.hasAvatar }.mapNotNull { c -> roles.loadAvatar(c.id)?.let { c.id to it.asImageBitmap() } }.toMap()
+            }
+            characters = saved.characters
+            persona = saved.persona
+            avatars = pics
+        }
+    }
+
+    private fun saveRoles() {
+        val snapshot = CharacterStore.Saved(characters, persona)
+        viewModelScope.launch(Dispatchers.IO) { roles.save(snapshot) }
+    }
+
+    fun updatePersona(p: Persona) { persona = p; saveRoles() }
+
+    /** 新建或修改角色；avatar 不为 null 时换头像（相册里选的图） */
+    fun saveCharacter(c: Character, avatar: Uri?, onFail: () -> Unit = {}) {
+        viewModelScope.launch {
+            var saved = c
+            if (avatar != null) {
+                val pic = withContext(Dispatchers.IO) {
+                    runCatching { decodeImage(getApplication(), avatar, 1024)?.let { roles.saveAvatar(c.id, it) } }.getOrNull()
+                }
+                if (pic == null) onFail() else {
+                    saved = saved.copy(hasAvatar = true)
+                    avatars = avatars + (c.id to pic.asImageBitmap())
+                }
+            }
+            characters = if (characters.any { it.id == c.id }) characters.map { if (it.id == c.id) saved else it } else characters + saved
+            saveRoles()
+        }
+    }
+
+    /** 删角色：用它聊过的对话留着，变成普通对话 */
+    fun deleteCharacter(id: String) {
+        characters = characters.filterNot { it.id == id }
+        avatars = avatars - id
+        saveRoles()
+        viewModelScope.launch(Dispatchers.IO) { roles.deleteAvatar(id) }
+    }
+
+    /** 导入「酒馆」角色卡（PNG 或 JSON）。onResult(成功与否, 说明) */
+    fun importCard(uri: Uri, onResult: (Boolean, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw CardException(strings.notACard)
+                    if (bytes.size > 20 * 1024 * 1024) throw CardException(strings.notACard)
+                    val id = CharacterStore.newId()
+                    val card = CharacterCard.parse(bytes, strings.notACard)
+                    // PNG 卡片本身就是头像
+                    val pic = if (CharacterCard.isPng(bytes)) {
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { roles.saveAvatar(id, it) }
+                    } else null
+                    Triple(card.copy(id = id, hasAvatar = pic != null, color = palette(id), createdAt = System.currentTimeMillis()), pic, id)
+                }
+            }
+            result.fold(
+                onSuccess = { (card, pic, id) ->
+                    if (pic != null) avatars = avatars + (id to pic.asImageBitmap())
+                    characters = characters + card
+                    saveRoles()
+                    onResult(true, strings.cardImported(card.name))
+                },
+                onFailure = { e -> onResult(false, (e as? CardException)?.message ?: strings.notACard) },
+            )
+        }
+    }
+
+    /** 没头像的角色用的底色，按 ID 挑一个 */
+    fun palette(id: String): Long = PALETTE[(id.hashCode() and 0x7fffffff) % PALETTE.size]
+
+    /** 和角色开一段新对话：角色先说开场白 */
+    fun startRoleChat(c: Character) {
+        stop()
+        val now = System.currentTimeMillis()
+        val user = RolePrompt.userName(persona, (if (english) English else Chinese).defaultUser)
+        val greeting = RolePrompt.fill(c.greeting, c.name, user).trim()
+        val messages = if (greeting.isEmpty()) emptyList() else listOf(Message(UUID.randomUUID().toString(), "assistant", greeting, time = now))
+        val conversation = Conversation(UUID.randomUUID().toString(), c.name, now, messages, characterId = c.id)
+        conversations = listOf(conversation) + conversations
+        currentId = conversation.id
+        save()
+    }
+
+    /** 用户改了回忆 */
+    fun updateMemory(conversationId: String, text: String) {
+        conversations = conversations.map { if (it.id == conversationId) it.copy(memory = text.trim()) else it }
+        save()
+    }
+
+    /**
+     * 对话长了就把最早的部分整理进回忆（每次角色回答完检查一次）；force 是用户点了「现在整理」。
+     * 失败了不要紧，下次再试；回忆没整理好之前照常发完整对话
+     */
+    fun remember(conversationId: String, force: Boolean = false, onDone: (Boolean) -> Unit = {}) {
+        if (remembering != null) return
+        val c = conversations.firstOrNull { it.id == conversationId } ?: return
+        val role = character(c.characterId) ?: return
+        val end = RoleMemory.due(c, force) ?: return onDone(false)
+        val key = apiKey.takeIf { it.isNotBlank() } ?: return onDone(false)
+        val user = RolePrompt.userName(persona, (if (english) English else Chinese).defaultUser)
+        val input = RoleMemory.input(c.memory, c.messages.subList(c.memoryUpTo.coerceIn(0, end), end), role.name, user)
+        remembering = conversationId
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) { runCatching { DeepSeek.complete(key, RoleMemory.SYSTEM, input) }.getOrNull() }
+            remembering = null
+            if (text.isNullOrBlank()) return@launch onDone(false)
+            conversations = conversations.map { if (it.id == conversationId) it.copy(memory = text, memoryUpTo = end) else it }
+            save()
+            onDone(true)
         }
     }
 
@@ -135,8 +282,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun toggleThink() { think = !think; prefs.edit().putBoolean("think", think).apply() }
-    fun toggleSearch() { search = !search; prefs.edit().putBoolean("search", search).apply() }
+    fun toggleThink() {
+        val c = current
+        if (currentCharacter != null && c != null) {
+            conversations = conversations.map { if (it.id == c.id) it.copy(think = !c.think) else it }
+            save()
+        } else { think = !think; prefs.edit().putBoolean("think", think).apply() }
+    }
+
+    fun toggleSearch() {
+        val c = current
+        if (currentCharacter != null && c != null) {
+            conversations = conversations.map { if (it.id == c.id) it.copy(search = !c.search) else it }
+            save()
+        } else { search = !search; prefs.edit().putBoolean("search", search).apply() }
+    }
 
     /** 换背景图。图片读不出来时调 onFail，原来的背景不动 */
     fun pickBackground(uri: Uri, onFail: () -> Unit) {
@@ -212,9 +372,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             save()
             return
         }
-        // 第一轮让模型顺手起个标题；用户手动改过名字的不动
-        val wantTitle = history.count { it.isUser } == 1
-        val body = DeepSeek.requestBody(history, think, search, wantTitle)
+        val role = character(conversation.characterId)
+        // 第一轮让模型顺手起个标题（角色对话不起：标题就是角色名，而且带 title 时创意度会失效）
+        val wantTitle = role == null && history.count { it.isUser } == 1
+        val body = if (role == null) DeepSeek.requestBody(history, think, search, wantTitle) else {
+            // 角色对话：系统提示里放角色设定和前情回忆，整理进回忆的旧消息不再发
+            val system = RolePrompt.system(role, persona, conversation.memory, text.defaultUser)
+            DeepSeek.requestBody(
+                history.drop(conversation.memoryUpTo.coerceIn(0, history.size)), conversation.think, conversation.search,
+                wantTitle = false, system = system, temperature = role.creativity, readUrl = false,
+            )
+        }
         generating = true
         job = viewModelScope.launch {
             var thinkStart = 0L
@@ -293,6 +461,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) it.copy(thinkSeconds = elapsed(thinkStart)) else it
                 }
                 save()
+                // 角色对话聊长了，悄悄把旧的部分整理进回忆
+                if (role != null) remember(conversationId)
             }
         }
     }
@@ -333,5 +503,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun save() {
         val snapshot = conversations
         viewModelScope.launch(Dispatchers.IO) { store.save(snapshot) }
+    }
+
+    private companion object {
+        /** 没头像的角色的底色 */
+        val PALETTE = listOf(0xFF5B7CFA, 0xFFE58A6E, 0xFF4FA88B, 0xFF9B6FD6, 0xFFF2A65A, 0xFF4A6FA5, 0xFFD46A8C, 0xFF8D7B68)
     }
 }

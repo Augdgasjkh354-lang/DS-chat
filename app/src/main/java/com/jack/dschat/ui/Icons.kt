@@ -47,6 +47,8 @@ object AppIcons {
     val VoiceCircle = line("$CIRCLE M9 12h.01 M12 9.6a3.4 3.4 0 0 1 0 4.8 M14.5 7.5a6.4 6.4 0 0 1 0 9")
     val ArrowUp = line("M12 19V5 M6 11l6-6 6 6", 2.2f)
     val ArrowDown = line("M12 5v14 M6 13l6 6 6-6", 2.2f)
+    /** 角色扮演：一张面具 */
+    val Mask = line("M5 5.5c4.5-1.5 9.5-1.5 14 0v5.5a7 7 0 0 1-14 0z M9 10.5h1.5 M13.5 10.5H15 M9.5 14.5c1.5 1.2 3.5 1.2 5 0")
     /** 导入：往下的箭头落进托盘 */
     val Import = line("M12 4v11 M7.5 10.5L12 15l4.5-4.5 M5 19h14")
     val Copy = line("M9 9h10v11H9z M5 15V4h10")

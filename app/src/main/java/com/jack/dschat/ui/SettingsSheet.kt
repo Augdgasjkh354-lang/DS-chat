@@ -398,28 +398,28 @@ private fun LevelSlider(label: String, value: Float, range: ClosedFloatingPointR
 
 /** 滑块没划过的那段用中性的灰，默认的颜色在浅色模式下偏粉 */
 @Composable
-private fun sliderColors() = SliderDefaults.colors(
+internal fun sliderColors() = SliderDefaults.colors(
     inactiveTrackColor = LocalColors.current.border,
     inactiveTickColor = LocalColors.current.sub,
 )
 
 @Composable
-private fun Section(title: String) {
+internal fun Section(title: String) {
     Text(title, color = LocalColors.current.sub, fontSize = 14.sp, modifier = Modifier.padding(start = 16.dp, top = 22.dp, bottom = 10.dp))
 }
 
 @Composable
-private fun Card(content: @Composable ColumnScope.() -> Unit) {
+internal fun Card(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(LocalColors.current.group), content = content)
 }
 
 @Composable
-private fun Divider(inset: androidx.compose.ui.unit.Dp = 64.dp) {
+internal fun Divider(inset: androidx.compose.ui.unit.Dp = 64.dp) {
     Box(Modifier.padding(start = inset, end = 16.dp).fillMaxWidth().height(1.dp).background(LocalColors.current.border))
 }
 
 @Composable
-private fun SettingRow(icon: ImageVector, label: String, value: String = "", trailing: ImageVector = AppIcons.ChevronRight, onClick: () -> Unit) {
+internal fun SettingRow(icon: ImageVector, label: String, value: String = "", trailing: ImageVector = AppIcons.ChevronRight, onClick: () -> Unit) {
     val colors = LocalColors.current
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 16.dp, top = 13.dp, bottom = 13.dp),

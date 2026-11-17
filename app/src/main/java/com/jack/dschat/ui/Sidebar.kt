@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -56,7 +57,7 @@ import com.jack.dschat.data.matches
 /** 侧边栏：搜索、按时间分组的历史记录、底下是用户和设置入口 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modifier: Modifier = Modifier) {
+fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, onRoles: () -> Unit, modifier: Modifier = Modifier) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     var query by rememberSaveable { mutableStateOf("") }
@@ -104,6 +105,22 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
             if (query.isNotEmpty()) {
                 Icon(AppIcons.Close, null, Modifier.size(20.dp).clip(CircleShape).clickable { query = "" }.padding(2.dp), tint = colors.sub)
             }
+        }
+
+        // 角色扮演入口
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 2.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onRoles)
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(AppIcons.Mask, null, Modifier.size(22.dp), tint = colors.text)
+            Spacer(Modifier.width(10.dp))
+            Text(strings.roles, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            val shown = vm.characters.take(3)
+            shown.forEachIndexed { i, c ->
+                Box(Modifier.offset(x = (-6 * i).dp)) { RoleAvatar(vm, c, 22.dp) }
+            }
+            Icon(AppIcons.ChevronRight, null, Modifier.size(16.dp), tint = colors.sub)
         }
 
         if (groups.isEmpty()) {
@@ -159,6 +176,10 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
                                         contentAlignment = Alignment.Center,
                                     ) { if (on) Icon(AppIcons.Check, null, Modifier.size(13.dp), tint = Color.White) }
                                     Spacer(Modifier.width(12.dp))
+                                }
+                                vm.character(conversation.characterId)?.let { role ->
+                                    RoleAvatar(vm, role, 22.dp)
+                                    Spacer(Modifier.width(10.dp))
                                 }
                                 Text(conversation.title, color = colors.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }

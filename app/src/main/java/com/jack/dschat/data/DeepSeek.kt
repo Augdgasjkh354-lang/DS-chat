@@ -49,19 +49,29 @@ object DeepSeek {
     class ApiException(val code: Int, message: String) : IOException(message)
 
     /** 拼请求体。history 是到这次提问为止的所有消息（最后一条是用户的） */
-    fun requestBody(history: List<Message>, think: Boolean, search: Boolean, wantTitle: Boolean): String {
+    fun requestBody(
+        history: List<Message>, think: Boolean, search: Boolean, wantTitle: Boolean,
+        /** 角色扮演的系统提示 */
+        system: String? = null,
+        /** 创意度。带了联网、读链接工具或 title 时接口会忽略它 */
+        temperature: Float? = null,
+        /** 读链接工具：普通对话一直开着（贴了网址就能读）；角色对话不带，免得创意度失效 */
+        readUrl: Boolean = true,
+    ): String {
         val body = buildJsonObject {
             put("model", MODEL)
             put("stream", true)
             put("thinking", buildJsonObject { put("type", if (think) "enabled" else "disabled") })
             if (think) put("reasoning_effort", "high")
-            // 读链接一直开着：用户贴了网址就能读；智能搜索开了才让它上网搜
-            put("tools", buildJsonArray {
+            val tools = buildJsonArray {
                 if (search) add(buildJsonObject { put("type", "deepseek_web_search") })
-                add(buildJsonObject { put("type", "deepseek_read_url") })
-            })
+                if (readUrl) add(buildJsonObject { put("type", "deepseek_read_url") })
+            }
+            if (tools.isNotEmpty()) put("tools", tools)
+            if (temperature != null) put("temperature", temperature)
             if (wantTitle) put("title", buildJsonObject { put("enabled", true) })
             put("messages", buildJsonArray {
+                if (system != null) add(buildJsonObject { put("role", "system"); put("content", system) })
                 for ((i, m) in history.withIndex()) {
                     if (!m.isUser && (m.text.isEmpty() || m.noContext)) continue // 出错、被停在半路什么都没有的回复不发
                     // 回复不进上下文的那一轮，提问也不发
@@ -177,6 +187,36 @@ object DeepSeek {
             conn.disconnect()
         }
     }.flowOn(Dispatchers.IO)
+
+    /** 不流式地问一句（整理回忆用），返回回答正文 */
+    fun complete(apiKey: String, system: String, user: String): String {
+        val body = buildJsonObject {
+            put("model", MODEL)
+            put("stream", false)
+            put("thinking", buildJsonObject { put("type", "disabled") })
+            put("temperature", 0.3)
+            put("messages", buildJsonArray {
+                add(buildJsonObject { put("role", "system"); put("content", system) })
+                add(buildJsonObject { put("role", "user"); put("content", user) })
+            })
+        }.toString()
+        val conn = open("$BASE/chat/completions", apiKey).apply {
+            requestMethod = "POST"
+            doOutput = true
+            readTimeout = 120_000
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            checkStatus(conn)
+            val root = json.parseToJsonElement(conn.inputStream.bufferedReader().readText()).jsonObject
+            root["error"]?.let { throw IOException(errorMessage(it)) }
+            val message = (root["choices"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("message") as? JsonObject
+            return message?.string("content")?.trim().orEmpty()
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     /** 查余额，顺便验证 Key 能不能用。返回像「¥12.34」这样的文字 */
     fun balance(apiKey: String): String {

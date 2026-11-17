@@ -87,7 +87,7 @@ import com.jack.dschat.ChatViewModel
 import com.jack.dschat.data.Message
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit, onRole: () -> Unit = {}) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val messages = vm.current?.messages.orEmpty()
@@ -99,7 +99,24 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CircleButton(AppIcons.Menu, onClick = onMenu)
-            Text(
+            val role = vm.currentCharacter
+            if (role != null) {
+                // 角色对话：顶栏是角色头像和名字，点开看前情回忆、编辑角色
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Row(
+                        Modifier.clip(CircleShape).clickable(onClick = onRole).padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RoleAvatar(vm, role, 26.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(role.name, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (vm.remembering == vm.currentId) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(strings.rememberingNow, color = colors.sub, fontSize = 12.sp)
+                        }
+                    }
+                }
+            } else Text(
                 vm.current?.title.orEmpty(),
                 color = colors.sub, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
@@ -255,6 +272,14 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
     } else Modifier
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        // 角色对话：回复上面带角色的头像和名字
+        vm.currentCharacter?.let { role ->
+            Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RoleAvatar(vm, role, 24.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(role.name, color = colors.sub, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            }
+        }
         if (message.reasoning.isNotEmpty()) {
             var expanded by rememberSaveable(message.id) { mutableStateOf(true) }
             val thinkingNow = streaming && message.text.isEmpty()
@@ -416,8 +441,8 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip(AppIcons.Atom, strings.deepThink, vm.think, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleThink() }
-                Chip(AppIcons.Globe, strings.smartSearch, vm.search, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleSearch() }
+                Chip(AppIcons.Atom, strings.deepThink, vm.thinkOn, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleThink() }
+                Chip(AppIcons.Globe, strings.smartSearch, vm.searchOn, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleSearch() }
             }
             Spacer(Modifier.width(8.dp))
             Icon(AppIcons.PlusCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
