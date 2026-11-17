@@ -2,9 +2,10 @@ package com.jack.dschat.ui
 
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.jack.dschat.data.Group
+import com.jack.dschat.data.HistoryImport
 
 /** 界面文字。语言在 App 里切换（设置 → 语言），所以不走系统的 strings.xml */
-open class Strings {
+open class Strings : HistoryImport.Texts {
     open val greeting = "你好，我能帮什么忙吗？"
     open val appName = "DS Chat"
     open val suggestions = listOf("帮我写一封请假邮件", "周末适合去哪儿徒步", "用简单的话解释复利", "给我的猫起个名字")
@@ -100,6 +101,24 @@ open class Strings {
     open val deleteAllConfirm = "所有对话都会被删除，无法恢复。"
     open val deleteConfirm = "删除后无法恢复。"
     open fun chatCount(n: Int) = "共 $n 个对话，保存在这台手机上"
+
+    open val importHistory = "导入 DeepSeek 历史对话"
+    open val importHint = "在 DeepSeek 官方 App 或网页打开 设置 → 数据管理 → 导出所有历史对话，下载得到的 zip 文件（链接 7 天内有效），在这里选它。导入的对话会合并进现有记录，同一个对话再导入会更新那一条。"
+    open val importing = "正在导入…"
+    open fun imported(added: Int, updated: Int, skipped: Int) = buildString {
+        append("导入完成：新增 $added 个对话")
+        if (updated > 0) append("，更新 $updated 个")
+        if (skipped > 0) append("，$skipped 个对话格式不对，跳过了")
+    }
+    override val notZip = "这个文件打不开，确认选的是官方导出的 zip 文件。"
+    override val badManifest = "这不是 DeepSeek 导出的历史对话文件。"
+    override fun badVersion(v: String) = "这个导出文件的格式版本（$v）还不支持。"
+    override val indexMismatch = "导出文件不完整，重新导出一次再试。"
+    override val empty = "导出文件里没有对话。"
+    override val replyError = "这条回复在官方 App 里出错了。"
+    override val replyRefused = "这个问题官方 App 没有回答。"
+    override fun image(name: String) = "[图片：$name]"
+    override fun file(name: String) = "[文件：$name]"
 }
 
 object Chinese : Strings()
@@ -198,6 +217,24 @@ object English : Strings() {
     override val deleteAllConfirm = "All chats will be deleted. This cannot be undone."
     override val deleteConfirm = "This cannot be undone."
     override fun chatCount(n: Int) = "$n chats, stored on this phone"
+
+    override val importHistory = "Import DeepSeek chat history"
+    override val importHint = "In the DeepSeek app or website, open Settings → Data → Export all chats, download the zip (the link lasts 7 days), and pick it here. Imported chats are merged with yours; importing the same chat again updates it."
+    override val importing = "Importing…"
+    override fun imported(added: Int, updated: Int, skipped: Int) = buildString {
+        append("Imported: $added new")
+        if (updated > 0) append(", $updated updated")
+        if (skipped > 0) append(", $skipped skipped (bad format)")
+    }
+    override val notZip = "Can't open this file. Make sure it's the zip exported by DeepSeek."
+    override val badManifest = "This isn't a DeepSeek chat history export."
+    override fun badVersion(v: String) = "This export's format version ($v) isn't supported yet."
+    override val indexMismatch = "The export is incomplete. Export again and retry."
+    override val empty = "There are no chats in this export."
+    override val replyError = "This reply failed in the DeepSeek app."
+    override val replyRefused = "The DeepSeek app didn't answer this."
+    override fun image(name: String) = "[Image: $name]"
+    override fun file(name: String) = "[File: $name]"
 }
 
 val LocalStrings = staticCompositionLocalOf<Strings> { Chinese }

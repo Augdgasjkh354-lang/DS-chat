@@ -273,8 +273,36 @@ private fun DataPage(vm: ChatViewModel) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     var confirm by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    var ok by remember { mutableStateOf(true) }
+    // 系统的文件选择器，不需要存储权限；有的文件管理器把 zip 标成 octet-stream
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            status = strings.importing
+            ok = true
+            vm.importHistory(uri) { good, text -> ok = good; status = text }
+        }
+    }
     Spacer(Modifier.height(8.dp))
     Text(strings.chatCount(vm.conversations.size), color = colors.sub, fontSize = 14.sp, modifier = Modifier.padding(start = 16.dp, bottom = 10.dp))
+    Card {
+        Row(
+            Modifier.fillMaxWidth().clickable(enabled = !vm.importing) {
+                picker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+            }.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(AppIcons.Import, null, Modifier.size(22.dp), tint = colors.accent)
+            Spacer(Modifier.width(12.dp))
+            Text(strings.importHistory, color = colors.text, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Icon(AppIcons.ChevronRight, null, Modifier.size(18.dp), tint = colors.sub)
+        }
+    }
+    if (status.isNotEmpty()) {
+        Text(status, color = if (ok) colors.accent else colors.danger, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+    }
+    Text(strings.importHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+    Spacer(Modifier.height(20.dp))
     Card {
         Row(
             Modifier.fillMaxWidth().clickable(enabled = vm.conversations.isNotEmpty()) { confirm = true }.padding(horizontal = 20.dp, vertical = 18.dp),

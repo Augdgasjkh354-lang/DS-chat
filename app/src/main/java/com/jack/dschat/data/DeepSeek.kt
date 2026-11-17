@@ -62,8 +62,10 @@ object DeepSeek {
             })
             if (wantTitle) put("title", buildJsonObject { put("enabled", true) })
             put("messages", buildJsonArray {
-                for (m in history) {
-                    if (!m.isUser && m.text.isEmpty()) continue // 出错、被停在半路什么都没有的回复不发
+                for ((i, m) in history.withIndex()) {
+                    if (!m.isUser && (m.text.isEmpty() || m.noContext)) continue // 出错、被停在半路什么都没有的回复不发
+                    // 回复不进上下文的那一轮，提问也不发
+                    if (m.isUser && history.getOrNull(i + 1)?.let { !it.isUser && it.noContext } == true) continue
                     add(buildJsonObject {
                         put("role", m.role)
                         put("content", m.text)

@@ -23,6 +23,8 @@ data class Message(
     val toolCalls: String = "",
     /** 出错时给人看的说明；空的是没出错 */
     val error: String = "",
+    /** 这一轮（提问 + 这条回复）不发给模型当上下文：导入的出错、被拒、服务端模板回复 */
+    val noContext: Boolean = false,
 ) {
     val isUser get() = role == "user"
 }

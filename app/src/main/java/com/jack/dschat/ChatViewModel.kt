@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.jack.dschat.data.ChatStore
 import com.jack.dschat.data.Conversation
 import com.jack.dschat.data.DeepSeek
+import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
 import com.jack.dschat.ui.Chinese
@@ -42,6 +43,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** 正在上网做的事（「正在搜索：…」），生成时顶在回复上面；null 是没在搜 */
     var activity by mutableStateOf<String?>(null)
+        private set
+
+    /** 正在导入历史对话 */
+    var importing by mutableStateOf(false)
         private set
 
     /** DeepSeek 开放平台的 API Key，只存在这台手机上 */
@@ -100,6 +105,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     onResult(false, if (e is DeepSeek.ApiException) strings.apiError(e.code, e.message.orEmpty()) else strings.networkError)
                 },
             )
+        }
+    }
+
+    /** 导入 DeepSeek 官方导出的历史对话 zip，合并进现有对话。onResult(成功与否, 给人看的说明) */
+    fun importHistory(uri: Uri, onResult: (ok: Boolean, text: String) -> Unit) {
+        if (importing) return
+        importing = true
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri) ?: throw HistoryImport.ImportException(strings.notZip)
+                    input.use { HistoryImport.read(it, strings) }
+                }
+            }
+            result.fold(
+                onSuccess = { r ->
+                    // 正在回答的对话要被导入覆盖时先停下
+                    if (generating && r.conversations.any { it.id == currentId }) stop()
+                    val (merged, added, updated) = HistoryImport.merge(conversations, r.conversations)
+                    conversations = merged
+                    save()
+                    onResult(true, strings.imported(added, updated, r.skipped))
+                },
+                onFailure = { e -> onResult(false, (e as? HistoryImport.ImportException)?.message ?: strings.notZip) },
+            )
+            importing = false
         }
     }
 
