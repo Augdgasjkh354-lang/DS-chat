@@ -129,7 +129,7 @@ class DeepSeekTest {
                 Block.Item("1.", "三", 0),
                 Block.Quote("引用"),
                 Block.Rule,
-                Block.Table(listOf(listOf("a", "b"), listOf("1", "2"))),
+                Block.Table(listOf(listOf("a", "b"), listOf("1", "2")), listOf('l', 'c')),
                 Block.Code("kotlin", "val x = 1"),
             ),
             blocks,

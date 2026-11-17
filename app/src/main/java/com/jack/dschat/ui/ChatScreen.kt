@@ -169,8 +169,11 @@ private fun TypingDots() {
 private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
     val listState = rememberLazyListState()
     val last = messages.last()
+    // 最后一条回复的字匀速冒出来（思考过程也是）
+    val reveal = rememberReveal(last.id, last.text.length)
+    val thinkReveal = rememberReveal(last.id + "r", last.reasoning.length)
     // 换对话、来新消息、流式输出时都滚到最底下（最后一项是个垫底的空白）
-    LaunchedEffect(vm.currentId, messages.size, last.text.length, last.reasoning.length, last.error, vm.activity) {
+    LaunchedEffect(vm.currentId, messages.size, reveal.shown, thinkReveal.shown, last.error, vm.activity) {
         listState.scrollToItem(messages.size)
     }
     LazyColumn(
@@ -181,7 +184,9 @@ private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
         itemsIndexed(messages, key = { _, m -> m.id }) { index, message ->
             val isLast = index == messages.lastIndex
             Box(Modifier.animateItem()) {
-                if (message.isUser) UserMessage(message) else AssistantMessage(vm, message, isLast)
+                if (message.isUser) UserMessage(message)
+                else if (isLast) AssistantMessage(vm, message, true, reveal, thinkReveal)
+                else AssistantMessage(vm, message, false)
             }
         }
         item(key = "bottom") { Spacer(Modifier.height(12.dp)) }
@@ -205,12 +210,15 @@ private fun UserMessage(message: Message) {
 }
 
 @Composable
-private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolean) {
+private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolean, reveal: Reveal? = null, thinkReveal: Reveal? = null) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    val streaming = isLast && vm.generating
+    // 接口结束了但字还没出完，也算还在输出
+    val streaming = isLast && (vm.generating || (reveal != null && reveal.shown < message.text.length))
+    val text = reveal?.let { message.text.take(it.shown) } ?: message.text
+    val reasoning = thinkReveal?.let { message.reasoning.take(it.shown) } ?: message.reasoning
     // 垫着背景图时，回复和思考过程都包进半透明的气泡
     val plate = if (LocalOnImage.current) {
         Modifier.clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(colors.card).padding(horizontal = 14.dp, vertical = 10.dp)
@@ -235,7 +243,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
             AnimatedVisibility(expanded) {
                 val bar = colors.border
                 Text(
-                    message.reasoning,
+                    reasoning,
                     color = colors.sub,
                     fontSize = 14.sp,
                     lineHeight = 22.sp,
@@ -262,9 +270,9 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
 
         if (message.text.isEmpty() && message.reasoning.isEmpty() && message.error.isEmpty() && streaming && activity == null) {
             TypingDots()
-        } else if (message.text.isNotEmpty()) {
+        } else if (text.isNotEmpty()) {
             SelectionContainer {
-                MarkdownText(message.text, modifier = plate)
+                MarkdownText(text, fade = reveal?.fade ?: 0, modifier = plate)
             }
         }
 

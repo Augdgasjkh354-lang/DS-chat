@@ -32,6 +32,12 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.border
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import kotlin.math.min
 import android.graphics.drawable.Drawable
 import android.util.LruCache
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -60,7 +66,8 @@ sealed interface Block {
     data class Item(val marker: String, val text: String, val depth: Int) : Block
     data class Quote(val text: String) : Block
     data class Code(val lang: String, val code: String) : Block
-    data class Table(val rows: List<List<String>>) : Block
+    /** aligns：每列的对齐，'l' 左、'c' 中、'r' 右（来自分隔行的冒号） */
+    data class Table(val rows: List<List<String>>, val aligns: List<Char> = emptyList()) : Block
     data object Rule : Block
     /** 单独占一段的公式：$$…$$ 或 \[…\] */
     data class Math(val tex: String) : Block
@@ -138,9 +145,16 @@ fun parseMarkdown(src: String): List<Block> {
             trimmed.startsWith("|") && i + 1 < lines.size && tableSepRe.matches(lines[i + 1]) -> {
                 flush()
                 val rows = mutableListOf(cells(line))
+                val aligns = cells(lines[i + 1]).map {
+                    when {
+                        it.startsWith(":") && it.endsWith(":") -> 'c'
+                        it.endsWith(":") -> 'r'
+                        else -> 'l'
+                    }
+                }
                 i += 2
                 while (i < lines.size && lines[i].trimStart().startsWith("|")) { rows += cells(lines[i]); i++ }
-                blocks += Block.Table(rows)
+                blocks += Block.Table(rows, aligns)
                 continue
             }
             bulletRe.matches(line) -> {
@@ -261,26 +275,28 @@ fun inline(
 }
 
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier) {
+fun MarkdownText(text: String, modifier: Modifier = Modifier, fade: Int = 0) {
     val colors = LocalColors.current
     val blocks = remember(text) { parseMarkdown(text) }
     val code = SpanStyle(fontFamily = FontFamily.Monospace, background = colors.group, fontSize = 14.sp)
     val link = SpanStyle(color = colors.accent)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        for (block in blocks) {
+        blocks.forEachIndexed { index, block ->
+            // 流式输出时，最后一段末尾刚冒出来的几个字是淡入的
+            val tail = if (index == blocks.lastIndex) fade else 0
             when (block) {
                 is Block.Heading -> RichText(
                     block.text, code, link, colors.text, when (block.level) { 1 -> 21.sp; 2 -> 19.sp; else -> 17.sp }, 28.sp,
-                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp),
+                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp), fade = tail,
                 )
-                is Block.Paragraph -> RichText(block.text, code, link, colors.text, 16.sp, 26.sp)
+                is Block.Paragraph -> RichText(block.text, code, link, colors.text, 16.sp, 26.sp, fade = tail)
                 is Block.Item -> Row(Modifier.padding(start = (block.depth * 16).dp)) {
                     Text(block.marker, color = colors.sub, fontSize = 16.sp, lineHeight = 26.sp, modifier = Modifier.width(if (block.marker == "•") 16.dp else 24.dp))
-                    RichText(block.text, code, link, colors.text, 16.sp, 26.sp)
+                    RichText(block.text, code, link, colors.text, 16.sp, 26.sp, fade = tail)
                 }
                 is Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
                     Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(colors.border))
-                    RichText(block.text, code, link, colors.sub, 16.sp, 26.sp, modifier = Modifier.padding(start = 12.dp))
+                    RichText(block.text, code, link, colors.sub, 16.sp, 26.sp, modifier = Modifier.padding(start = 12.dp), fade = tail)
                 }
                 is Block.Code -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.group)) {
                     if (block.lang.isNotEmpty()) Text(block.lang, color = colors.sub, fontSize = 12.sp, modifier = Modifier.padding(start = 14.dp, top = 8.dp))
@@ -289,21 +305,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.horizontalScroll(rememberScrollState()).padding(14.dp),
                     )
                 }
-                is Block.Table -> Column(
-                    Modifier.clip(RoundedCornerShape(12.dp)).background(colors.group).horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
-                ) {
-                    block.rows.forEachIndexed { r, row ->
-                        Row {
-                            row.forEach { cell ->
-                                RichText(
-                                    cell, code, link, colors.text, 14.sp, 21.sp,
-                                    fontWeight = if (r == 0) FontWeight.Bold else FontWeight.Normal,
-                                    modifier = Modifier.width(140.dp).padding(horizontal = 12.dp, vertical = 6.dp),
-                                )
-                            }
-                        }
-                    }
-                }
+                is Block.Table -> TableBlock(block, code, link)
                 Block.Rule -> Box(Modifier.fillMaxWidth().height(1.dp).background(colors.border))
                 is Block.Math -> MathBlock(block.tex, colors.text)
             }
@@ -316,6 +318,9 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier) {
 private fun RichText(
     src: String, code: SpanStyle, link: SpanStyle, color: Color, fontSize: TextUnit, lineHeight: TextUnit,
     modifier: Modifier = Modifier, fontWeight: FontWeight = FontWeight.Normal,
+    textAlign: TextAlign? = null,
+    /** 末尾几个字淡入：越靠后越透明 */
+    fade: Int = 0,
 ) {
     val density = LocalDensity.current
     val sizePx = with(density) { fontSize.toPx() }
@@ -324,6 +329,13 @@ private fun RichText(
         val list = mutableListOf<String>()
         inline(src, code, link, list) { Latex.drawable(it, sizePx, argb) != null } to list.toList()
     }
+    val shown = if (fade <= 0 || text.isEmpty()) text else AnnotatedString.Builder(text).apply {
+        val n = min(fade, text.length)
+        for (k in 0 until n) {
+            val pos = text.length - n + k
+            addStyle(SpanStyle(color = color.copy(alpha = color.alpha * (n - k) / (n + 1f))), pos, pos + 1)
+        }
+    }.toAnnotatedString()
     val inlineContent = formulas.mapIndexedNotNull { i, tex ->
         val d = Latex.drawable(tex, sizePx, argb) ?: return@mapIndexedNotNull null
         val placeholder = with(density) {
@@ -332,9 +344,105 @@ private fun RichText(
         (MATH_ID + i) to InlineTextContent(placeholder) { Formula(d, Modifier.fillMaxSize()) }
     }.toMap()
     Text(
-        text, color = color, fontSize = fontSize, lineHeight = lineHeight, fontWeight = fontWeight,
-        inlineContent = inlineContent, modifier = modifier,
+        shown, color = color, fontSize = fontSize, lineHeight = lineHeight, fontWeight = fontWeight,
+        textAlign = textAlign, inlineContent = inlineContent, modifier = modifier,
     )
+}
+
+/**
+ * 表格：每列按内容定宽（最窄 56dp，最宽 240dp，超了就换行）；整张表比屏幕窄时各列平分多出的空间，
+ * 比屏幕宽时先把宽列压窄（多换几行），压到 110dp 还放不下才左右滑。
+ * 表头加底色加粗，隔行浅底色，细线分格；对齐跟着分隔行的冒号走
+ */
+@Composable
+private fun TableBlock(block: Block.Table, code: SpanStyle, link: SpanStyle) {
+    val colors = LocalColors.current
+    val cols = block.rows.maxOf { it.size }
+    val shape = RoundedCornerShape(12.dp)
+    val line = colors.border
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val available = constraints.maxWidth
+        Box(Modifier.clip(shape).border(1.dp, line, shape).horizontalScroll(rememberScrollState())) {
+            TableLayout(cols, available) {
+                block.rows.forEachIndexed { r, row ->
+                    for (c in 0 until cols) {
+                        val align = block.aligns.getOrElse(c) { 'l' }
+                        Box(
+                            Modifier
+                                .background(if (r == 0) colors.bubble else if (r % 2 == 0) colors.card else Color.Transparent)
+                                .drawBehind {
+                                    val w = 1.dp.toPx() / 2
+                                    if (c < cols - 1) drawLine(line, Offset(size.width - w, 0f), Offset(size.width - w, size.height), w * 2)
+                                    if (r < block.rows.lastIndex) drawLine(line, Offset(0f, size.height - w), Offset(size.width, size.height - w), w * 2)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            contentAlignment = when (align) { 'c' -> Alignment.TopCenter; 'r' -> Alignment.TopEnd; else -> Alignment.TopStart },
+                        ) {
+                            RichText(
+                                row.getOrElse(c) { "" }, code, link, colors.text, 14.sp, 21.sp,
+                                fontWeight = if (r == 0) FontWeight.Bold else FontWeight.Normal,
+                                textAlign = when (align) { 'c' -> TextAlign.Center; 'r' -> TextAlign.End; else -> TextAlign.Start },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 把列宽调到正好占满 available：窄了平分多出的，宽了从宽列身上按比例扣，但不扣到 floor 以下 */
+fun fitWidths(widths: IntArray, available: Int, floor: Int) {
+    val extra = available - widths.sum()
+    if (extra >= 0) {
+        for (c in widths.indices) widths[c] += extra / widths.size + if (c < extra % widths.size) 1 else 0
+        return
+    }
+    val room = widths.sumOf { (it - floor).coerceAtLeast(0) }
+    if (room <= 0) return
+    val cut = minOf(-extra, room)
+    var left = cut
+    for (c in widths.indices) {
+        val give = ((widths[c] - floor).coerceAtLeast(0).toLong() * cut / room).toInt()
+        widths[c] -= give
+        left -= give
+    }
+    // 取整剩下的零头从最宽的列扣
+    while (left > 0) {
+        val c = widths.indices.maxBy { widths[it] }
+        if (widths[c] <= floor) break
+        widths[c]--
+        left--
+    }
+}
+
+/** 按行排好的格子（行优先，每行 cols 个）；列宽取这一列最宽的内容，行高取这一行最高的格子 */
+@Composable
+private fun TableLayout(cols: Int, available: Int, content: @Composable () -> Unit) {
+    Layout(content) { cells, _ ->
+        val rows = (cells.size + cols - 1) / cols
+        val minW = 56.dp.roundToPx()
+        val maxW = 240.dp.roundToPx()
+        val widths = IntArray(cols) { c ->
+            (0 until rows).maxOf { r -> cells.getOrNull(r * cols + c)?.maxIntrinsicWidth(Constraints.Infinity) ?: 0 }.coerceIn(minW, maxW)
+        }
+        if (available != Constraints.Infinity) fitWidths(widths, available, 110.dp.roundToPx())
+        val heights = IntArray(rows) { r ->
+            (0 until cols).maxOf { c -> cells.getOrNull(r * cols + c)?.maxIntrinsicHeight(widths[c]) ?: 0 }
+        }
+        val placeables = cells.mapIndexed { i, cell -> cell.measure(Constraints.fixed(widths[i % cols], heights[i / cols])) }
+        layout(widths.sum(), heights.sum()) {
+            var y = 0
+            for (r in 0 until rows) {
+                var x = 0
+                for (c in 0 until cols) {
+                    placeables.getOrNull(r * cols + c)?.place(x, y)
+                    x += widths[c]
+                }
+                y += heights[r]
+            }
+        }
+    }
 }
 
 /** 单独一段的公式：放得下就居中，太宽就左右滑；画不出来就按源码显示 */
