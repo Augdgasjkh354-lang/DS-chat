@@ -37,6 +37,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +61,10 @@ import com.jack.dschat.ChatViewModel
 import com.jack.dschat.data.Character
 import com.jack.dschat.data.CharacterStore
 import com.jack.dschat.data.Conversation
+import com.jack.dschat.data.LoreEntry
+import com.jack.dschat.data.Lorebook
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import kotlin.math.roundToInt
 
 /** 角色头像：有图用图，没图是名字第一个字配底色 */
@@ -111,14 +116,16 @@ private sealed interface RolePage {
 fun RolesSheet(vm: ChatViewModel, onClose: () -> Unit, onStarted: () -> Unit) {
     val strings = LocalStrings.current
     var page by remember { mutableStateOf<RolePage>(RolePage.List) }
+    // 编辑页里进了世界书时，左上角的返回先退回世界书的上一层
+    var innerBack by remember { mutableStateOf<(() -> Unit)?>(null) }
     BackHandler { if (page == RolePage.List) onClose() else page = RolePage.List }
     when (val p = page) {
         RolePage.List -> Sheet(strings.roles, null, onClose) {
             RoleList(vm, onEdit = { page = RolePage.Edit(it) }, onMe = { page = RolePage.Me }, onStart = { vm.startRoleChat(it); onStarted() })
         }
         RolePage.Me -> Sheet(strings.me, { page = RolePage.List }, onClose) { MePage(vm) { page = RolePage.List } }
-        is RolePage.Edit -> Sheet(if (p.id == null) strings.newRole else strings.editRole, { page = RolePage.List }, onClose) {
-            RoleEditor(vm, vm.character(p.id)) { page = RolePage.List }
+        is RolePage.Edit -> Sheet(if (p.id == null) strings.newRole else strings.editRole, innerBack ?: { page = RolePage.List }, onClose) {
+            RoleEditor(vm, vm.character(p.id), setBack = { innerBack = it }) { page = RolePage.List }
         }
     }
 }
@@ -218,7 +225,7 @@ private fun ColumnScope.MePage(vm: ChatViewModel, onDone: () -> Unit) {
 }
 
 @Composable
-private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, onDone: () -> Unit) {
+private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setBack: ((() -> Unit)?) -> Unit = {}, onDone: () -> Unit) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val context = LocalContext.current
@@ -234,7 +241,33 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, onDo
     var avatar by remember { mutableStateOf<Uri?>(null) }
     var more by rememberSaveable { mutableStateOf(listOf(personality, scenario, examples, instructions).any { it.isNotBlank() }) }
     var confirmDelete by remember { mutableStateOf(false) }
+    // 世界书跟着角色一起保存；lore：null 是角色编辑页，-1 是世界书列表，>= 0 是在改第几条
+    var book by remember { mutableStateOf(original?.book ?: Lorebook()) }
+    var lore by remember { mutableStateOf<Int?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { if (it != null) avatar = it }
+    DisposableEffect(lore) {
+        val page = lore
+        setBack(if (page == null) null else ({ lore = if (page >= 0) -1 else null }))
+        onDispose { setBack(null) }
+    }
+    lore?.let { page ->
+        BackHandler { lore = if (page >= 0) -1 else null }
+        if (page >= 0 && page < book.entries.size) {
+            LoreEntryEditor(
+                book.entries[page],
+                onChange = { e -> book = book.copy(entries = book.entries.toMutableList().also { it[page] = e }) },
+                onDelete = { book = book.copy(entries = book.entries.filterIndexed { i, _ -> i != page }); lore = -1 },
+                onDone = {
+                    // 什么都没写的新条目不留
+                    if (book.entries[page].content.isBlank() && book.entries[page].keys.isEmpty()) {
+                        book = book.copy(entries = book.entries.filterIndexed { i, _ -> i != page })
+                    }
+                    lore = -1
+                },
+            )
+        } else LoreList(vm, book, onChange = { book = it }, onOpen = { lore = it }, onDone = { lore = null })
+        return
+    }
     val draft = (original ?: Character(id, "", color = vm.palette(id), createdAt = System.currentTimeMillis())).copy(name = name.ifBlank { "?" })
 
     // 头像：点一下从相册换
@@ -282,6 +315,10 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, onDo
         Text(strings.moreSettings, color = colors.sub, fontSize = 14.sp)
         Icon(AppIcons.ChevronDown, null, Modifier.padding(start = 4.dp).size(14.dp), tint = colors.sub)
     }
+    Card {
+        SettingRow(AppIcons.Doc, strings.lorebook, value = strings.loreCount(book.entries.size)) { lore = -1 }
+    }
+    Spacer(Modifier.height(10.dp))
     AnimatedVisibility(more) {
         Card {
             Field(strings.rolePersonality, personality, minLines = 2) { personality = it }
@@ -303,6 +340,7 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, onDo
                     draft.copy(
                         name = name.trim(), description = desc.trim(), greeting = greeting.trim(), personality = personality.trim(),
                         scenario = scenario.trim(), examples = examples.trim(), instructions = instructions.trim(), creativity = creativity,
+                        book = book,
                     ),
                     avatar,
                 ) { Toast.makeText(context, strings.imageFailed, Toast.LENGTH_SHORT).show() }
@@ -337,6 +375,111 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, onDo
     }
 }
 
+/** 世界书列表：每条一行，右边开关启用；底下新建、导入 */
+@Composable
+private fun ColumnScope.LoreList(vm: ChatViewModel, book: Lorebook, onChange: (Lorebook) -> Unit, onOpen: (Int) -> Unit, onDone: () -> Unit) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    val context = LocalContext.current
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.readLorebook(uri) { read, text ->
+            if (read != null) onChange(book.copy(entries = book.entries + read.entries))
+            Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        }
+    }
+    Text(strings.lorebook, color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
+    Text(strings.loreHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp))
+    if (book.entries.isEmpty()) {
+        Text(strings.noEntries, color = colors.sub, fontSize = 15.sp, modifier = Modifier.padding(16.dp))
+    } else Card {
+        book.entries.forEachIndexed { i, e ->
+            if (i > 0) Divider(inset = 20.dp)
+            Row(
+                Modifier.fillMaxWidth().clickable { onOpen(i) }.padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        e.comment.ifBlank { e.keys.firstOrNull() ?: strings.untitledEntry },
+                        color = if (e.enabled) colors.text else colors.sub, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (e.constant) strings.alwaysOn else e.keys.joinToString("、"),
+                        color = colors.sub, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Switch(
+                    checked = e.enabled,
+                    onCheckedChange = { on -> onChange(book.copy(entries = book.entries.toMutableList().also { it[i] = e.copy(enabled = on) })) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = colors.accent, uncheckedTrackColor = colors.border, uncheckedBorderColor = Color.Transparent),
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    Card {
+        SettingRow(AppIcons.Edit, strings.newEntry) {
+            onChange(book.copy(entries = book.entries + LoreEntry("lore-" + CharacterStore.newId())))
+            onOpen(book.entries.size)
+        }
+        Divider()
+        SettingRow(AppIcons.Import, strings.importLore) {
+            picker.launch(arrayOf("application/json", "image/png", "application/octet-stream", "text/plain"))
+        }
+    }
+    Text(strings.importLoreHint, color = colors.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
+    Spacer(Modifier.height(16.dp))
+    Card {
+        Text(strings.done, color = colors.accent, fontSize = 17.sp, modifier = Modifier.fillMaxWidth().clickable(onClick = onDone).padding(horizontal = 20.dp, vertical = 16.dp))
+    }
+}
+
+/** 改世界书的一条：备注、关键词、内容、始终生效、启用 */
+@Composable
+private fun ColumnScope.LoreEntryEditor(entry: LoreEntry, onChange: (LoreEntry) -> Unit, onDelete: () -> Unit, onDone: () -> Unit) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    var keys by remember(entry.id) { mutableStateOf(entry.keys.joinToString("，")) }
+    Spacer(Modifier.height(4.dp))
+    Card {
+        Field(strings.entryName, entry.comment, strings.entryNameHint) { onChange(entry.copy(comment = it)) }
+        Divider(inset = 20.dp)
+        Field(strings.entryKeys, keys, strings.entryKeysHint) {
+            keys = it
+            onChange(entry.copy(keys = it.split(Regex("[,，、\n]")).map { k -> k.trim() }.filter { k -> k.isNotEmpty() }))
+        }
+        Divider(inset = 20.dp)
+        Field(strings.entryContent, entry.content, strings.entryContentHint, minLines = 6) { onChange(entry.copy(content = it)) }
+    }
+    Spacer(Modifier.height(16.dp))
+    Card {
+        ToggleRow(strings.alwaysOn, entry.constant) { onChange(entry.copy(constant = it)) }
+        Divider(inset = 20.dp)
+        ToggleRow(strings.entryEnabled, entry.enabled) { onChange(entry.copy(enabled = it)) }
+    }
+    Spacer(Modifier.height(16.dp))
+    Card {
+        Text(strings.done, color = colors.accent, fontSize = 17.sp, modifier = Modifier.fillMaxWidth().clickable(onClick = onDone).padding(horizontal = 20.dp, vertical = 16.dp))
+        Divider(inset = 20.dp)
+        Text(strings.deleteEntry, color = colors.danger, fontSize = 17.sp, modifier = Modifier.fillMaxWidth().clickable(onClick = onDelete).padding(horizontal = 20.dp, vertical = 16.dp))
+    }
+}
+
+@Composable
+private fun ToggleRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    val colors = LocalColors.current
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!on) }.padding(start = 20.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = colors.text, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = on, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = colors.accent, uncheckedTrackColor = colors.border, uncheckedBorderColor = Color.Transparent),
+        )
+    }
+}
+
 /** 角色对话顶栏点开：前情回忆（能改、能马上整理），以及编辑这个角色 */
 @Composable
 fun MemorySheet(vm: ChatViewModel, conversation: Conversation, onClose: () -> Unit) {
@@ -345,9 +488,10 @@ fun MemorySheet(vm: ChatViewModel, conversation: Conversation, onClose: () -> Un
     val context = LocalContext.current
     val role = vm.character(conversation.characterId) ?: return
     var editing by remember { mutableStateOf(false) }
+    var innerBack by remember { mutableStateOf<(() -> Unit)?>(null) }
     BackHandler { if (editing) editing = false else onClose() }
     if (editing) {
-        Sheet(strings.editRole, { editing = false }, onClose) { RoleEditor(vm, role) { editing = false } }
+        Sheet(strings.editRole, innerBack ?: { editing = false }, onClose) { RoleEditor(vm, role, setBack = { innerBack = it }) { editing = false } }
         return
     }
     var text by remember(conversation.id, conversation.memory) { mutableStateOf(conversation.memory) }

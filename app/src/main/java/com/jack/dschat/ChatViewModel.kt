@@ -21,6 +21,8 @@ import com.jack.dschat.data.CharacterCard
 import com.jack.dschat.data.CardException
 import com.jack.dschat.data.CharacterStore
 import com.jack.dschat.data.Persona
+import com.jack.dschat.data.Lore
+import com.jack.dschat.data.Lorebook
 import com.jack.dschat.data.RoleMemory
 import com.jack.dschat.data.RolePrompt
 import com.jack.dschat.data.decodeImage
@@ -187,6 +189,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     onResult(true, strings.cardImported(card.name))
                 },
                 onFailure = { e -> onResult(false, (e as? CardException)?.message ?: strings.notACard) },
+            )
+        }
+    }
+
+    /** 读一个世界书文件（酒馆世界书 JSON，或带世界书的角色卡），交给编辑页加到角色里 */
+    fun readLorebook(uri: Uri, onResult: (Lorebook?, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw CardException(strings.notALore)
+                    if (bytes.size > 20 * 1024 * 1024) throw CardException(strings.notALore)
+                    Lore.parseFile(bytes, strings.notALore)
+                }
+            }
+            result.fold(
+                onSuccess = { onResult(it, strings.loreImported(it.entries.size)) },
+                onFailure = { e -> onResult(null, (e as? CardException)?.message ?: strings.notALore) },
             )
         }
     }
@@ -377,7 +398,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val wantTitle = role == null && history.count { it.isUser } == 1
         val body = if (role == null) DeepSeek.requestBody(history, think, search, wantTitle) else {
             // 角色对话：系统提示里放角色设定和前情回忆，整理进回忆的旧消息不再发
-            val system = RolePrompt.system(role, persona, conversation.memory, text.defaultUser)
+            // 世界书：最近几条消息里提到了哪些关键词，就把对应的设定带上
+            val lore = Lore.activate(role.book, history.map { it.text })
+            val system = RolePrompt.system(role, persona, conversation.memory, text.defaultUser, lore)
             DeepSeek.requestBody(
                 history.drop(conversation.memoryUpTo.coerceIn(0, history.size)), conversation.think, conversation.search,
                 wantTitle = false, system = system, temperature = role.creativity, readUrl = false,

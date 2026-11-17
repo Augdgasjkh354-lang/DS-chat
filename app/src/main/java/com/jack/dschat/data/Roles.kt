@@ -35,11 +35,47 @@ data class Character(
     /** 头像底色（没有图片时） */
     val color: Long = 0xFF5B7CFA,
     val createdAt: Long = 0,
+    /** 世界书：和角色绑在一起的背景资料，提到关键词时才告诉模型（卡里的 character_book） */
+    val book: Lorebook = Lorebook(),
 ) {
     companion object {
         const val DEFAULT_CREATIVITY = 1.3f
     }
 }
+
+/** 世界书的一条 */
+@Serializable
+data class LoreEntry(
+    val id: String,
+    /** 关键词：对话里出现任意一个就生效；写成 /正则/flags 按正则匹配 */
+    val keys: List<String> = emptyList(),
+    /** 次要关键词：selective 时还要再出现其中任意一个 */
+    val secondaryKeys: List<String> = emptyList(),
+    val content: String = "",
+    /** 备注（卡里的 comment / name），只给人看 */
+    val comment: String = "",
+    val enabled: Boolean = true,
+    /** 始终生效，不看关键词 */
+    val constant: Boolean = false,
+    val selective: Boolean = false,
+    val caseSensitive: Boolean = false,
+    /** 插入顺序：越小越靠前；超出篇幅时先保留大的（越靠后越重要，和酒馆一样） */
+    val order: Int = 100,
+    /** true 放在角色设定之后，false 放在之前 */
+    val after: Boolean = false,
+)
+
+@Serializable
+data class Lorebook(
+    val name: String = "",
+    /** 看最近几条消息里有没有关键词 */
+    val scanDepth: Int = Lore.DEFAULT_SCAN_DEPTH,
+    /** 篇幅上限（卡里的 token_budget）；0 用默认 */
+    val tokenBudget: Int = 0,
+    /** 生效条目的内容里出现别的关键词，也让那些条目生效 */
+    val recursive: Boolean = false,
+    val entries: List<LoreEntry> = emptyList(),
+)
 
 /** 「我」的设定：所有角色都知道 */
 @Serializable
@@ -70,6 +106,7 @@ object CharacterCard {
             .filter { it.isNotEmpty() && it != "{{original}}" }.joinToString("\n\n")
         return Character(
             id = "",
+            book = (data["character_book"] as? JsonObject)?.let { Lore.parseBook(it) } ?: Lorebook(),
             name = name,
             description = f("description").ifEmpty { f("char_persona") },
             personality = f("personality"),
@@ -132,6 +169,111 @@ object CharacterCard {
     }
 }
 
+/** 世界书：读（酒馆角色卡里的 character_book，或单独的世界书 JSON）和挑出这一轮该生效的条目 */
+object Lore {
+    const val DEFAULT_SCAN_DEPTH = 4
+    /** 默认最多带这么多字的世界书内容 */
+    const val DEFAULT_BUDGET_CHARS = 8000
+
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull
+    private fun JsonObject.bool(k: String) = str(k)?.toBooleanStrictOrNull()
+    private fun JsonObject.int(k: String) = str(k)?.toDoubleOrNull()?.toInt()
+    private fun JsonObject.list(k: String): List<String> = when (val v = this[k]) {
+        is JsonArray -> v.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }.filter { it.isNotEmpty() }
+        is JsonPrimitive -> v.contentOrNull?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        else -> emptyList()
+    }
+
+    /**
+     * 角色卡 V2 / V3 的 character_book：entries 是数组，字段 keys、secondary_keys、enabled、insertion_order、position 等。
+     * 酒馆单独导出的世界书：entries 是以编号为键的对象，字段 key、keysecondary、disable、order、position(0 前 / 其余后)。
+     */
+    fun parseBook(root: JsonObject): Lorebook? {
+        val raw = root["entries"] ?: return null
+        val items = when (raw) {
+            is JsonArray -> raw.mapNotNull { it as? JsonObject }
+            is JsonObject -> raw.values.mapNotNull { it as? JsonObject }
+            else -> return null
+        }
+        val entries = items.mapIndexedNotNull { i, e ->
+            val content = e.str("content")?.trim().orEmpty()
+            if (content.isEmpty()) return@mapIndexedNotNull null
+            val ext = e["extensions"] as? JsonObject
+            val position = e.str("position") ?: ext?.str("position")
+            LoreEntry(
+                id = "lore-" + java.util.UUID.randomUUID(),
+                keys = e.list("keys").ifEmpty { e.list("key") },
+                secondaryKeys = e.list("secondary_keys").ifEmpty { e.list("keysecondary") },
+                content = content,
+                comment = e.str("comment")?.trim().orEmpty().ifEmpty { e.str("name")?.trim().orEmpty() },
+                enabled = e.bool("enabled") ?: (e.bool("disable")?.not() ?: true),
+                constant = e.bool("constant") ?: false,
+                selective = e.bool("selective") ?: false,
+                caseSensitive = e.bool("case_sensitive") ?: e.bool("caseSensitive") ?: false,
+                order = e.int("insertion_order") ?: e.int("order") ?: (100 + i),
+                after = when (position) { null, "before_char", "0" -> false; else -> true },
+            )
+        }
+        return Lorebook(
+            name = root.str("name").orEmpty(),
+            scanDepth = (root.int("scan_depth") ?: DEFAULT_SCAN_DEPTH).coerceIn(1, 50),
+            tokenBudget = root.int("token_budget") ?: 0,
+            recursive = root.bool("recursive_scanning") ?: false,
+            entries = entries,
+        )
+    }
+
+    /** 读一个单独的世界书文件，或者整张角色卡里的世界书 */
+    fun parseFile(bytes: ByteArray, notABook: String): Lorebook {
+        val text = if (CharacterCard.isPng(bytes)) CharacterCard.pngCardText(bytes) else bytes.toString(Charsets.UTF_8)
+        val root = text?.let { runCatching { json.parseToJsonElement(it.trim().removePrefix("\uFEFF")).jsonObject }.getOrNull() }
+            ?: throw CardException(notABook)
+        val book = (root["data"] as? JsonObject)?.get("character_book") as? JsonObject
+            ?: root["character_book"] as? JsonObject ?: root
+        return parseBook(book)?.takeIf { it.entries.isNotEmpty() } ?: throw CardException(notABook)
+    }
+
+    /** 关键词有没有出现在 text 里；/…/flags 按正则 */
+    fun matches(key: String, text: String, caseSensitive: Boolean): Boolean {
+        val k = key.trim()
+        if (k.isEmpty()) return false
+        val re = Regex("""^/(.+)/([a-z]*)$""").find(k)
+        if (re != null) {
+            // 正则按它自己的标志：带 i 才不分大小写
+            val options = if ('i' in re.groupValues[2]) setOf(RegexOption.IGNORE_CASE) else emptySet()
+            return runCatching { Regex(re.groupValues[1], options).containsMatchIn(text) }.getOrDefault(false)
+        }
+        return text.contains(k, ignoreCase = !caseSensitive)
+    }
+
+    /**
+     * 这一轮生效的条目：始终生效的，加上关键词出现在最近 scanDepth 条消息里的（selective 的还要次要关键词也出现）。
+     * 开了 recursive 时，生效条目的内容也算进扫描范围（最多再扫三轮）。超出篇幅时先丢 order 小的，最后按 order 排好
+     */
+    fun activate(book: Lorebook, recent: List<String>): List<LoreEntry> {
+        val pool = book.entries.filter { it.enabled && it.content.isNotBlank() }
+        if (pool.isEmpty()) return emptyList()
+        var scan = recent.takeLast(book.scanDepth.coerceAtLeast(1)).joinToString("\n")
+        val active = LinkedHashSet<LoreEntry>()
+        repeat(if (book.recursive) 4 else 1) {
+            val found = pool.filter { e ->
+                e !in active && (e.constant || (e.keys.any { matches(it, scan, e.caseSensitive) } &&
+                    (!e.selective || e.secondaryKeys.isEmpty() || e.secondaryKeys.any { matches(it, scan, e.caseSensitive) })))
+            }
+            if (found.isEmpty()) return@repeat
+            active += found
+            scan += "\n" + found.joinToString("\n") { it.content }
+        }
+        val budget = if (book.tokenBudget > 0) book.tokenBudget * 2 else DEFAULT_BUDGET_CHARS
+        var used = 0
+        val kept = active.sortedWith(compareByDescending<LoreEntry> { it.constant }.thenByDescending { it.order })
+            .filter { e -> (used + e.content.length <= budget).also { if (it) used += e.content.length } }
+        return kept.sortedBy { it.order }
+    }
+}
+
 /** 角色对话发给模型的系统提示和上下文 */
 object RolePrompt {
     /** 卡里常见的占位符：{{char}} 换成角色名，{{user}} 换成「我」的名字 */
@@ -141,18 +283,23 @@ object RolePrompt {
 
     fun userName(persona: Persona, fallback: String) = persona.name.trim().ifEmpty { fallback }
 
-    fun system(c: Character, persona: Persona, memory: String, userFallback: String): String {
+    fun system(c: Character, persona: Persona, memory: String, userFallback: String, lore: List<LoreEntry> = emptyList()): String {
         val user = userName(persona, userFallback)
         fun f(s: String) = fill(s, c.name, user).trim()
+        fun loreSection(entries: List<LoreEntry>) = entries.joinToString("\n\n") { f(it.content) }
+        val before = lore.filterNot { it.after }
+        val afterLore = lore.filter { it.after }
         return buildString {
             append("你现在扮演「${c.name}」，和「$user」进行角色扮演对话。\n")
             append("规则：始终以${c.name}的身份、语气和视角说话，不跳出角色，不提自己是 AI 或模型；")
             append("动作、神态、心理可以用（括号）描写；回复长短跟着情境走，像真人聊天；")
             append("只写${c.name}的言行，不替$user 说话、不替$user 做决定；记住之前发生过的事，前后一致。\n")
             append("用户用什么语言说话，就用什么语言回复。\n")
+            if (before.isNotEmpty()) append("\n【世界设定】\n").append(loreSection(before)).append('\n')
             if (c.description.isNotBlank()) append("\n【${c.name}的设定】\n").append(f(c.description)).append('\n')
             if (c.personality.isNotBlank()) append("\n【性格】\n").append(f(c.personality)).append('\n')
             if (c.scenario.isNotBlank()) append("\n【场景】\n").append(f(c.scenario)).append('\n')
+            if (afterLore.isNotEmpty()) append("\n【相关设定】\n").append(loreSection(afterLore)).append('\n')
             if (persona.description.isNotBlank()) append("\n【关于$user】\n").append(f(persona.description)).append('\n')
             if (c.examples.isNotBlank()) {
                 append("\n【示例对话】（只是说话风格的参考，不是真的发生过）\n")
