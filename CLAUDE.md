@@ -19,7 +19,8 @@
 
 - 包结构：`data/`（数据模型、存储）、`ui/`（界面、主题、图标、文字），`ChatViewModel` 管状态。
 - 注释、界面文字都是中文；界面文字放在 `ui/Strings.kt`（中英两套，App 内切换），不走 `strings.xml`。
-- 图标是 `ui/Icons.kt` 里手写的路径，不引图标库。不要用鲸鱼、四角星这类和别家 AI 撞脸的标志。
+- 图标是 `ui/Icons.kt` 里手写的路径，不引图标库。
+- App 标志是 Jack 给的蓝色鲸鱼图（`res/drawable-nodpi/logo.png`，桌面图标是 `ic_launcher_foreground.png` 配白底），别换掉。
 - 单测在 `app/src/test`。
 
 ## 本地编译（云端容器）

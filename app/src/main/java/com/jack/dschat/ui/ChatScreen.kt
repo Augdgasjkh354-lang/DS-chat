@@ -70,6 +70,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.painterResource
+import com.jack.dschat.R
 import androidx.compose.ui.unit.sp
 import com.jack.dschat.ChatViewModel
 import com.jack.dschat.data.Message
@@ -127,7 +129,7 @@ private fun EmptyState(onPick: (String) -> Unit) {
     ) {
         Box(contentAlignment = Alignment.Center) {
             Box(Modifier.size(220.dp).background(Brush.radialGradient(listOf(colors.accent2.copy(alpha = if (colors.isDark) 0.22f else 0.16f), Color.Transparent))))
-            Image(AppIcons.Logo, null, Modifier.size(60.dp))
+            Image(painterResource(R.drawable.logo), null, Modifier.size(60.dp))
         }
         Text(strings.greeting, color = colors.text, fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 0.dp))
         Spacer(Modifier.height(26.dp))

@@ -45,6 +45,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.painterResource
+import com.jack.dschat.R
 import androidx.compose.ui.unit.sp
 import com.jack.dschat.ChatViewModel
 import com.jack.dschat.data.Conversation
@@ -71,7 +73,7 @@ fun Sidebar(vm: ChatViewModel, onPick: () -> Unit, onSettings: () -> Unit, modif
 
     Column(modifier.statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(AppIcons.Logo, null, Modifier.size(26.dp))
+            Image(painterResource(R.drawable.logo), null, Modifier.size(26.dp))
             Spacer(Modifier.width(10.dp))
             Text(strings.appName, color = colors.text, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             PlainButton(AppIcons.NewChat, onClick = { vm.newChat(); onPick() })
