@@ -32,6 +32,10 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
+import androidx.compose.runtime.key
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.border
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.Layout
@@ -92,13 +96,14 @@ fun parseMarkdown(src: String): List<Block> {
         val line = lines[i]
         val trimmed = line.trimStart()
         when {
-            trimmed.startsWith("```") -> {
+            trimmed.startsWith("```") || trimmed.startsWith("~~~") -> {
                 flush()
-                val lang = trimmed.removePrefix("```").trim()
+                val fence = trimmed.take(3)
+                val lang = trimmed.drop(3).trim()
                 val code = StringBuilder()
                 i++
                 // 流式输出时代码块可能还没闭合，那就一直到结尾
-                while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                while (i < lines.size && !lines[i].trimStart().startsWith(fence)) {
                     if (code.isNotEmpty()) code.append('\n')
                     code.append(lines[i])
                     i++
@@ -178,6 +183,11 @@ fun parseMarkdown(src: String): List<Block> {
                 blocks += Block.Quote(quote.toString())
                 continue
             }
+            // 列表项下面缩进的续行接在那一项后面
+            line.startsWith("  ") && para.isEmpty() && blocks.lastOrNull() is Block.Item -> {
+                val last = blocks.removeAt(blocks.lastIndex) as Block.Item
+                blocks += last.copy(text = last.text + "\n" + line.trim())
+            }
             else -> {
                 if (para.isNotEmpty()) para.append('\n')
                 para.append(line.trim())
@@ -189,7 +199,54 @@ fun parseMarkdown(src: String): List<Block> {
     return blocks
 }
 
-private fun cells(line: String) = line.trim().removePrefix("|").removeSuffix("|").split("|").map { it.trim() }
+/** 一行表格切成格子：去掉两头的竖线；转义的 \| 是格子里的竖线，不算分隔 */
+private fun cells(line: String): List<String> {
+    var t = line.trim()
+    if (t.startsWith("|")) t = t.drop(1)
+    if (t.endsWith("|") && !t.endsWith("\\|")) t = t.dropLast(1)
+    return t.split(Regex("""(?<!\\)\|""")).map { it.trim().replace("\\|", "|") }
+}
+
+/**
+ * 按空行切段，每段单独排版：写完的段落内容不变就不再重排，流式输出时只有正在写的最后一段在刷新。
+ * 代码块（``` ~~~）和公式块（$$、\[ \]）里的空行不切
+ */
+fun splitBlocks(md: String): List<String> {
+    val out = mutableListOf<String>()
+    val cur = StringBuilder()
+    var fence: String? = null
+    var math = false
+    for (line in md.replace("\r\n", "\n").split('\n')) {
+        val t = line.trim()
+        if (fence == null && (t.startsWith("```") || t.startsWith("~~~"))) fence = t.take(3)
+        else if (fence != null && t.startsWith(fence)) fence = null
+        else if (fence == null) {
+            if (t == "$$") math = !math
+            else if (t == "\\[") math = true
+            else if (t == "\\]") math = false
+        }
+        if (t.isEmpty() && fence == null && !math) {
+            if (cur.isNotBlank()) out += cur.toString().trimEnd('\n')
+            cur.clear()
+        } else cur.append(line).append('\n')
+    }
+    if (cur.isNotBlank()) out += cur.toString().trimEnd('\n')
+    return out
+}
+
+/** 「**小标题**：说明」「**小标题：**说明」这样的列表项拆成（小标题，说明）；冒号、破折号或换行才算分开 */
+private val itemTitleRe = Regex("""^\*\*([^*\n]{1,40}?)\*\*(?:\s*[：:—–]\s*|\s*-\s+|\s*\n\s*)(.+)$""", RegexOption.DOT_MATCHES_ALL)
+private val itemTitleColonRe = Regex("""^\*\*([^*\n]{1,40}?[：:])\*\*\s*(.+)$""", RegexOption.DOT_MATCHES_ALL)
+
+fun itemTitle(text: String): Pair<String?, String> {
+    val t = text.trim()
+    val m = itemTitleRe.matchEntire(t) ?: itemTitleColonRe.matchEntire(t) ?: return null to text
+    val rest = m.groupValues[2].trim()
+    return if (rest.isEmpty()) null to text else m.groupValues[1].trim().trimEnd('：', ':') to rest
+}
+
+/** 裸露的网址：到空白或中文标点为止，末尾的英文标点不算 */
+private val bareUrlRe = Regex("""^https?://[^\s<>()（）「」『』【】，。；：！？、“”]+""")
 
 /** 行内公式在文字里占位用的 id 前缀，后面接它在 math 列表里的序号 */
 const val MATH_ID = "math:"
@@ -262,6 +319,16 @@ fun inline(
                 withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(rest.substring(1, end)) }
                 i += end + 1
             }
+            rest.startsWith("<br") && Regex("""^<br\s*/?>""").find(rest) != null -> {
+                append('\n')
+                i += Regex("""^<br\s*/?>""").find(rest)!!.value.length
+            }
+            (rest.startsWith("http://") || rest.startsWith("https://")) && (i == 0 || !text[i - 1].isLetterOrDigit()) &&
+                bareUrlRe.find(rest) != null -> {
+                val url = bareUrlRe.find(rest)!!.value.trimEnd('.', ',', ';', ':', '!', '?', '\'', '"')
+                withLink(LinkAnnotation.Url(url, TextLinkStyles(link))) { append(url) }
+                i += url.length
+            }
             rest.startsWith("[") -> {
                 val m = Regex("""^\[([^\]]+)]\(([^)\s]+)\)""").find(rest)
                 if (m != null) {
@@ -276,27 +343,39 @@ fun inline(
 
 @Composable
 fun MarkdownText(text: String, modifier: Modifier = Modifier, fade: Int = 0) {
+    val chunks = remember(text) { splitBlocks(text) }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        chunks.forEachIndexed { i, chunk ->
+            // 按位置记：写完的段落文字不变，里面的东西都不会重新解析、排版
+            key(i) { MarkdownChunk(chunk, if (i == chunks.lastIndex) fade else 0) }
+        }
+    }
+}
+
+/** 一段（空行之间）的 Markdown */
+@Composable
+private fun MarkdownChunk(text: String, fade: Int) {
     val colors = LocalColors.current
     val blocks = remember(text) { parseMarkdown(text) }
     val code = SpanStyle(fontFamily = FontFamily.Monospace, background = colors.group, fontSize = 14.sp)
-    val link = SpanStyle(color = colors.accent)
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val link = SpanStyle(color = colors.accent, textDecoration = TextDecoration.Underline)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEachIndexed { index, block ->
-            // 流式输出时，最后一段末尾刚冒出来的几个字是淡入的
+            // 流式输出时，最后一块末尾刚冒出来的几个字是淡入的
             val tail = if (index == blocks.lastIndex) fade else 0
             when (block) {
                 is Block.Heading -> RichText(
-                    block.text, code, link, colors.text, when (block.level) { 1 -> 21.sp; 2 -> 19.sp; else -> 17.sp }, 28.sp,
-                    fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp), fade = tail,
+                    block.text, code, link, colors.text,
+                    when (block.level) { 1 -> 21.sp; 2 -> 19.sp; 3 -> 17.5.sp; else -> 16.sp },
+                    when (block.level) { 1 -> 29.sp; 2 -> 27.sp; else -> 25.sp },
+                    fontWeight = if (block.level <= 2) FontWeight.Bold else FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = if (block.level <= 2) 8.dp else 4.dp), fade = tail, spacing = 0.sp,
                 )
-                is Block.Paragraph -> RichText(block.text, code, link, colors.text, 16.sp, 26.sp, fade = tail)
-                is Block.Item -> Row(Modifier.padding(start = (block.depth * 16).dp)) {
-                    Text(block.marker, color = colors.sub, fontSize = 16.sp, lineHeight = 26.sp, modifier = Modifier.width(if (block.marker == "•") 16.dp else 24.dp))
-                    RichText(block.text, code, link, colors.text, 16.sp, 26.sp, fade = tail)
-                }
+                is Block.Paragraph -> RichText(block.text, code, link, colors.text, BODY, BODY_LINE, fade = tail)
+                is Block.Item -> ListItem(block, code, link, tail)
                 is Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
                     Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(colors.border))
-                    RichText(block.text, code, link, colors.sub, 16.sp, 26.sp, modifier = Modifier.padding(start = 12.dp), fade = tail)
+                    RichText(block.text, code, link, colors.sub, BODY, BODY_LINE, modifier = Modifier.padding(start = 12.dp), fade = tail)
                 }
                 is Block.Code -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(colors.group)) {
                     if (block.lang.isNotEmpty()) Text(block.lang, color = colors.sub, fontSize = 12.sp, modifier = Modifier.padding(start = 14.dp, top = 8.dp))
@@ -306,10 +385,46 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, fade: Int = 0) {
                     )
                 }
                 is Block.Table -> TableBlock(block, code, link)
-                Block.Rule -> Box(Modifier.fillMaxWidth().height(1.dp).background(colors.border))
+                Block.Rule -> Box(Modifier.padding(vertical = 6.dp).fillMaxWidth().height(1.dp).background(colors.border))
                 is Block.Math -> MathBlock(block.tex, colors.text)
             }
         }
+    }
+}
+
+private val BODY = 16.sp
+private val BODY_LINE = 26.sp
+
+/**
+ * 列表项：第一层的编号放进浅灰小圆里，第二层起的圆点是空心的；
+ * 「**小标题**：说明」拆成加粗的小标题一行、颜色浅一点的说明一行
+ */
+@Composable
+private fun ListItem(block: Block.Item, code: SpanStyle, link: SpanStyle, fade: Int) {
+    val colors = LocalColors.current
+    val ordered = block.marker != "•"
+    Row(Modifier.padding(start = (block.depth.coerceAtMost(3) * 18).dp, top = if (ordered && block.depth == 0) 2.dp else 0.dp)) {
+        if (ordered && block.depth == 0) {
+            Box(
+                Modifier.padding(top = 1.dp).size(24.dp).clip(CircleShape).background(colors.bubble),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(block.marker.trimEnd('.', ')'), color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.width(10.dp))
+        } else {
+            Text(
+                if (ordered) block.marker else if (block.depth == 0) "•" else "◦",
+                color = if (ordered) colors.text else colors.sub, fontSize = BODY, lineHeight = BODY_LINE,
+                fontWeight = if (ordered) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier.width(if (ordered) 26.dp else 18.dp),
+            )
+        }
+        val (title, rest) = remember(block.text) { itemTitle(block.text) }
+        if (title != null) Column(Modifier.weight(1f)) {
+            RichText(title, code, link, colors.text, BODY, BODY_LINE, fontWeight = FontWeight.SemiBold)
+            RichText(rest, code, link, colors.sub, BODY, BODY_LINE, fade = fade)
+        } else RichText(block.text, code, link, colors.text, BODY, BODY_LINE, modifier = Modifier.weight(1f), fade = fade)
     }
 }
 
@@ -321,6 +436,8 @@ private fun RichText(
     textAlign: TextAlign? = null,
     /** 末尾几个字淡入：越靠后越透明 */
     fade: Int = 0,
+    /** 字距：正文稍微放开一点读着松快，标题不放 */
+    spacing: TextUnit = 0.02.em,
 ) {
     val density = LocalDensity.current
     val sizePx = with(density) { fontSize.toPx() }
@@ -345,7 +462,7 @@ private fun RichText(
     }.toMap()
     Text(
         shown, color = color, fontSize = fontSize, lineHeight = lineHeight, fontWeight = fontWeight,
-        textAlign = textAlign, inlineContent = inlineContent, modifier = modifier,
+        textAlign = textAlign, letterSpacing = spacing, inlineContent = inlineContent, modifier = modifier,
     )
 }
 

@@ -7,6 +7,9 @@ import com.jack.dschat.data.Source
 import com.jack.dschat.ui.Block
 import com.jack.dschat.ui.parseMarkdown
 import com.jack.dschat.ui.inline
+import com.jack.dschat.ui.itemTitle
+import com.jack.dschat.ui.splitBlocks
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -164,5 +167,35 @@ class DeepSeekTest {
         )
         // 流式输出时还没闭合：先当普通文字
         assertEquals(listOf(Block.Paragraph("$d\nx+1")), parseMarkdown("$d\nx+1"))
+    }
+
+    @Test
+    fun splitsOnBlankLinesButKeepsCodeAndMathTogether() {
+        val d = "${'$'}${'$'}"
+        val md = "第一段\n\n```\na\n\nb\n```\n\n$d\nx\n\ny\n$d\n\n最后"
+        assertEquals(listOf("第一段", "```\na\n\nb\n```", "$d\nx\n\ny\n$d", "最后"), splitBlocks(md))
+    }
+
+    @Test
+    fun splitsItemTitles() {
+        assertEquals("联网搜索" to "模型自己决定", itemTitle("**联网搜索**：模型自己决定"))
+        assertEquals("价格" to "很便宜", itemTitle("**价格：** 很便宜"))
+        assertEquals(null to "**结论**。后文", itemTitle("**结论**。后文"))
+    }
+
+    @Test
+    fun linksBareUrlsAndBreaks() {
+        val out = inline("看 https://a.com/x?y=1。然后<br>换行", SpanStyle(), SpanStyle())
+        assertEquals("看 https://a.com/x?y=1。然后\n换行", out.text)
+        val url = out.getLinkAnnotations(0, out.length).single().item as LinkAnnotation.Url
+        assertEquals("https://a.com/x?y=1", url.url)
+    }
+
+    @Test
+    fun tildeFencesContinuationsAndEscapedPipes() {
+        assertEquals(listOf(Block.Code("py", "x = 1")), parseMarkdown("~~~py\nx = 1\n~~~"))
+        assertEquals(listOf(Block.Item("•", "第一行\n接着写", 0)), parseMarkdown("- 第一行\n  接着写"))
+        val table = parseMarkdown("| a | b |\n|---|---|\n| x \\| y | z |").single() as Block.Table
+        assertEquals(listOf("x | y", "z"), table.rows[1])
     }
 }

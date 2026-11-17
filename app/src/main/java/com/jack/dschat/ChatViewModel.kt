@@ -186,19 +186,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         generating = true
         job = viewModelScope.launch {
             var thinkStart = 0L
+            var thinkSeconds = 0
+            // 字先攒在这里，最多每 60 毫秒往界面上刷一次：每来几个字就复制一遍整个对话列表太费
+            val reasoning = StringBuilder()
+            val content = StringBuilder()
+            var lastFlush = 0L
+            fun flush() {
+                lastFlush = System.currentTimeMillis()
+                val r = reasoning.toString()
+                val c = content.toString()
+                update(conversationId, messageId) { it.copy(reasoning = r, text = c, thinkSeconds = thinkSeconds) }
+            }
+            fun maybeFlush() { if (System.currentTimeMillis() - lastFlush > 60) flush() }
             try {
                 DeepSeek.stream(key, body).collect { event ->
                     when (event) {
                         is DeepSeek.Event.Reasoning -> {
                             if (thinkStart == 0L) thinkStart = System.currentTimeMillis()
-                            update(conversationId, messageId) { it.copy(reasoning = it.reasoning + event.text) }
+                            reasoning.append(event.text)
+                            maybeFlush()
                         }
-                        is DeepSeek.Event.Content -> update(conversationId, messageId) {
+                        is DeepSeek.Event.Content -> {
                             // 正文开始出来，思考就算结束了
-                            val seconds = if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) elapsed(thinkStart) else it.thinkSeconds
-                            it.copy(text = it.text + event.text, thinkSeconds = seconds)
+                            if (reasoning.isNotEmpty() && thinkSeconds == 0) thinkSeconds = elapsed(thinkStart)
+                            content.append(event.text)
+                            maybeFlush()
                         }
                         is DeepSeek.Event.ToolStarted -> {
+                            flush()
                             val what = event.queries.ifEmpty { listOfNotNull(event.url) }
                             activity = when {
                                 event.queries.isNotEmpty() -> text.searching(event.queries.joinToString("、"))
@@ -211,18 +226,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         is DeepSeek.Event.Title -> if (wantTitle) {
                             conversations = conversations.map { if (it.id == conversationId) it.copy(title = event.title) else it }
                         }
-                        is DeepSeek.Event.Finish -> update(conversationId, messageId) {
-                            it.copy(
-                                sources = event.cited,
-                                toolCalls = event.toolCalls,
-                                error = when (event.reason) {
-                                    "content_filter" -> text.refused
-                                    "length" -> text.truncated
-                                    else -> ""
-                                },
-                            )
+                        is DeepSeek.Event.Finish -> {
+                            flush()
+                            update(conversationId, messageId) {
+                                it.copy(
+                                    sources = event.cited,
+                                    toolCalls = event.toolCalls,
+                                    error = when (event.reason) {
+                                        "content_filter" -> text.refused
+                                        "length" -> text.truncated
+                                        else -> ""
+                                    },
+                                )
+                            }
                         }
-                        is DeepSeek.Event.Failure -> update(conversationId, messageId) { it.copy(error = text.failed(event.message)) }
+                        is DeepSeek.Event.Failure -> {
+                            flush()
+                            update(conversationId, messageId) { it.copy(error = text.failed(event.message)) }
+                        }
                     }
                 }
             } catch (e: CancellationException) {
@@ -233,6 +254,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 update(conversationId, messageId) { it.copy(error = text.networkError) }
             } finally {
                 // 被停止时也走这里：已经出来的字留着，存盘
+                flush()
                 generating = false
                 activity = null
                 update(conversationId, messageId) {

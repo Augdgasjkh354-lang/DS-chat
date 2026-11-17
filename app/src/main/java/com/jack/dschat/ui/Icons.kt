@@ -46,6 +46,7 @@ object AppIcons {
     val PlusCircle = line("$CIRCLE M12 8v8 M8 12h8")
     val VoiceCircle = line("$CIRCLE M9 12h.01 M12 9.6a3.4 3.4 0 0 1 0 4.8 M14.5 7.5a6.4 6.4 0 0 1 0 9")
     val ArrowUp = line("M12 19V5 M6 11l6-6 6 6", 2.2f)
+    val ArrowDown = line("M12 5v14 M6 13l6 6 6-6", 2.2f)
     val Copy = line("M9 9h10v11H9z M5 15V4h10")
     val Refresh = line("M19 12a7 7 0 1 1-2.1-5 M19 4v4h-4")
     val Trash = line("M5 7h14 M10 7V4.5h4V7 M7 7l1 13h8l1-13 M10.5 11v5.5 M13.5 11v5.5")

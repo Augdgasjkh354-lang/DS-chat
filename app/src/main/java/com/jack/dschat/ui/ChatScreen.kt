@@ -43,6 +43,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -167,29 +177,48 @@ private fun TypingDots() {
 
 @Composable
 private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
     val listState = rememberLazyListState()
-    val last = messages.last()
-    // 最后一条回复的字匀速冒出来（思考过程也是）
-    val reveal = rememberReveal(last.id, last.text.length)
-    val thinkReveal = rememberReveal(last.id + "r", last.reasoning.length)
-    // 换对话、来新消息、流式输出时都滚到最底下（最后一项是个垫底的空白）
-    LaunchedEffect(vm.currentId, messages.size, reveal.shown, thinkReveal.shown, last.error, vm.activity) {
-        listState.scrollToItem(messages.size)
-    }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 8.dp),
-    ) {
-        itemsIndexed(messages, key = { _, m -> m.id }) { index, message ->
-            val isLast = index == messages.lastIndex
-            Box(Modifier.animateItem()) {
-                if (message.isUser) UserMessage(message)
-                else if (isLast) AssistantMessage(vm, message, true, reveal, thinkReveal)
-                else AssistantMessage(vm, message, false)
+    val scope = rememberCoroutineScope()
+    // 输出中（或字还没放完）平滑地跟着最底下走；往上翻看时不拽人，右下角给个回到底部的按钮
+    val follow = rememberFollowBottom(
+        listState, vm.currentId, messages.lastOrNull { it.isUser }?.id,
+        moving = vm.generating || StreamReveal.pending,
+    )
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().nestedScroll(follow.connection),
+            contentPadding = PaddingValues(top = 8.dp),
+        ) {
+            itemsIndexed(messages, key = { _, m -> m.id }) { index, message ->
+                val isLast = index == messages.lastIndex
+                Box(Modifier.animateItem()) {
+                    if (message.isUser) UserMessage(message) else AssistantMessage(vm, message, isLast)
+                }
             }
+            item(key = "bottom") { Spacer(Modifier.height(12.dp)) }
         }
-        item(key = "bottom") { Spacer(Modifier.height(12.dp)) }
+        AnimatedVisibility(
+            visible = !follow.on && listState.canScrollForward,
+            enter = fadeIn() + scaleIn(initialScale = 0.8f),
+            exit = fadeOut() + scaleOut(targetScale = 0.8f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+        ) {
+            Icon(
+                AppIcons.ArrowDown, strings.toBottom,
+                Modifier.size(40.dp).clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape)
+                    .clickable {
+                        follow.on = true
+                        scope.launch {
+                            val n = listState.layoutInfo.totalItemsCount
+                            if (n > 0) listState.animateScrollToItem(n - 1, Int.MAX_VALUE)
+                        }
+                    }.padding(10.dp),
+                tint = colors.text,
+            )
+        }
     }
 }
 
@@ -210,15 +239,16 @@ private fun UserMessage(message: Message) {
 }
 
 @Composable
-private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolean, reveal: Reveal? = null, thinkReveal: Reveal? = null) {
+private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolean) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    // 接口结束了但字还没出完，也算还在输出
-    val streaming = isLast && (vm.generating || (reveal != null && reveal.shown < message.text.length))
-    val text = reveal?.let { message.text.take(it.shown) } ?: message.text
-    val reasoning = thinkReveal?.let { message.reasoning.take(it.shown) } ?: message.reasoning
+    // 回答按打字的节奏放出来（思考过程照原速）；接口结束了但字还没放完，也算还在输出
+    val reveal = rememberReveal(message.id, message.text, live = isLast && vm.generating)
+    val streaming = isLast && (vm.generating || reveal.shown < message.text.length)
+    val text = if (reveal.shown >= message.text.length) message.text else message.text.substring(0, reveal.shown)
+    val reasoning = message.reasoning
     // 垫着背景图时，回复和思考过程都包进半透明的气泡
     val plate = if (LocalOnImage.current) {
         Modifier.clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(colors.card).padding(horizontal = 14.dp, vertical = 10.dp)
@@ -272,7 +302,7 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
             TypingDots()
         } else if (text.isNotEmpty()) {
             SelectionContainer {
-                MarkdownText(text, fade = reveal?.fade ?: 0, modifier = plate)
+                MarkdownText(text, fade = reveal.fade, modifier = plate)
             }
         }
 
@@ -299,13 +329,22 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
 }
 
 /** 回答引用的网页：收起时是一颗「引用 N 个网页」，点开是列表，点一条用浏览器打开 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun Sources(message: Message) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val uriHandler = LocalUriHandler.current
     var expanded by rememberSaveable(message.id + "src") { mutableStateOf(false) }
-    Column(Modifier.padding(top = 12.dp)) {
+    // 展开后把整个列表露出来，不让输入框挡住下半截
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            delay(260)
+            requester.bringIntoView()
+        }
+    }
+    Column(Modifier.padding(top = 12.dp).bringIntoViewRequester(requester)) {
         Row(
             Modifier.clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape)
                 .clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 7.dp),
