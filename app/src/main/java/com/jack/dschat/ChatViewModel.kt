@@ -16,6 +16,9 @@ import androidx.lifecycle.viewModelScope
 import com.jack.dschat.data.ChatStore
 import com.jack.dschat.data.Conversation
 import com.jack.dschat.data.DeepSeek
+import com.jack.dschat.data.DeepSeekFiles
+import com.jack.dschat.data.ImageStore
+import kotlinx.serialization.json.JsonObject
 import com.jack.dschat.data.Character
 import com.jack.dschat.data.CharacterCard
 import com.jack.dschat.data.CardException
@@ -30,6 +33,9 @@ import android.graphics.BitmapFactory
 import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
+import com.jack.dschat.data.switchTo
+import com.jack.dschat.data.startNewVersion
+import com.jack.dschat.data.finishVersion
 import com.jack.dschat.ui.Chinese
 import com.jack.dschat.ui.English
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +50,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val backgrounds = BackgroundStore(app)
     private val roles = CharacterStore(app)
+    private val images = ImageStore(app)
+    private val files = DeepSeekFiles(app.filesDir)
 
     var conversations by mutableStateOf(listOf<Conversation>())
         private set
@@ -348,13 +356,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun send(text: String) {
         val content = text.trim()
-        if (content.isEmpty() || generating) return
+        val images = pendingImages
+        if ((content.isEmpty() && images.isEmpty()) || generating) return
+        pendingImages = emptyList()
         val now = System.currentTimeMillis()
-        val userMessage = Message(UUID.randomUUID().toString(), "user", content, time = now)
+        val userMessage = Message(UUID.randomUUID().toString(), "user", content, time = now, images = images)
         val id = currentId ?: UUID.randomUUID().toString()
         val existing = conversations.firstOrNull { it.id == id }
         conversations = if (existing == null) {
-            listOf(Conversation(id, titleFrom(content), now, listOf(userMessage))) + conversations
+            val title = titleFrom(content).ifEmpty { (if (english) English else Chinese).imageTitle }
+            listOf(Conversation(id, title, now, listOf(userMessage))) + conversations
         } else {
             conversations.map { if (it.id == id) it.copy(updatedAt = now, messages = it.messages + userMessage) else it }
         }
@@ -368,12 +379,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (generating) return
         val last = conversation.messages.lastOrNull() ?: return
         if (conversation.messages.none { it.isUser }) return
-        if (!last.isUser) {
-            conversations = conversations.map {
-                if (it.id == conversation.id) it.copy(messages = it.messages.dropLast(1)) else it
-            }
+        // 最后一条是回复：旧的留着当一个版本，新生成的是下一版，可以左右切换
+        answer(conversation.id, regenerating = if (last.isUser) null else last)
+    }
+
+    /** 最后一条回复换到上一版 / 下一版（delta = -1 / +1） */
+    fun switchVersion(messageId: String, delta: Int) {
+        if (generating) return
+        val c = current ?: return
+        if (c.messages.lastOrNull()?.id != messageId) return
+        conversations = conversations.map { conv ->
+            if (conv.id != c.id) conv else conv.copy(messages = conv.messages.map { if (it.id == messageId) it.switchTo(it.active + delta) else it })
         }
-        answer(conversation.id)
+        save()
     }
 
     fun stop() {
@@ -381,29 +399,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         job = null
     }
 
-    private fun answer(conversationId: String) {
+    /** regenerating 不为 null 时是给这条回复生成新的一版（写进同一条消息），否则在末尾加一条新回复 */
+    private fun answer(conversationId: String, regenerating: Message? = null) {
         val conversation = conversations.firstOrNull { it.id == conversationId } ?: return
-        val history = conversation.messages
-        val messageId = UUID.randomUUID().toString()
+        val history = if (regenerating != null) conversation.messages.dropLast(1) else conversation.messages
+        val messageId = regenerating?.id ?: UUID.randomUUID().toString()
+        val previous = regenerating?.active ?: 0
         val text = if (english) English else Chinese
-        append(conversationId, Message(messageId, "assistant", "", time = System.currentTimeMillis()))
+        if (regenerating != null) update(conversationId, messageId) { it.startNewVersion() }
+        else append(conversationId, Message(messageId, "assistant", "", time = System.currentTimeMillis()))
         val key = apiKey
         if (key.isBlank()) {
-            update(conversationId, messageId) { it.copy(error = text.noKey) }
+            update(conversationId, messageId) { it.copy(error = text.noKey).let { m -> if (regenerating != null) m.finishVersion(previous) else m } }
             save()
             return
         }
         val role = character(conversation.characterId)
         // 第一轮让模型顺手起个标题（角色对话不起：标题就是角色名，而且带 title 时创意度会失效）
         val wantTitle = role == null && history.count { it.isUser } == 1
-        val body = if (role == null) DeepSeek.requestBody(history, think, search, wantTitle) else {
+        val useThink = think
+        val useSearch = search
+        // 拼请求体；ids 是已经传到 Files API 的图片（路径 → file_id），其余图片内联发送。要读图片文件，在后台线程调
+        fun build(ids: Map<String, String>): String {
+            val image: (String) -> JsonObject? = { p -> ids[p]?.let(DeepSeek::fileImage) ?: DeepSeek.inlineImage(p) }
+            if (role == null) return DeepSeek.requestBody(history, useThink, useSearch, wantTitle, image = image)
             // 角色对话：系统提示里放角色设定和前情回忆，整理进回忆的旧消息不再发
             // 世界书：最近几条消息里提到了哪些关键词，就把对应的设定带上
             val lore = Lore.activate(role.book, history.map { it.text })
             val system = RolePrompt.system(role, persona, conversation.memory, text.defaultUser, lore)
-            DeepSeek.requestBody(
+            return DeepSeek.requestBody(
                 history.drop(conversation.memoryUpTo.coerceIn(0, history.size)), conversation.think, conversation.search,
-                wantTitle = false, system = system, temperature = role.creativity, readUrl = false,
+                wantTitle = false, system = system, temperature = role.creativity, readUrl = false, image = image,
             )
         }
         generating = true
@@ -422,6 +448,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             fun maybeFlush() { if (System.currentTimeMillis() - lastFlush > 60) flush() }
             try {
+                // 图片先传到 Files API（传过的直接用 file_id），之后每轮不用重传整张图
+                var ids = withContext(Dispatchers.IO) { files.ensure(key, history.flatMap { it.images }) }
+                var body = withContext(Dispatchers.IO) { build(ids) }
+                var retried = false
+                while (true) try {
                 DeepSeek.stream(key, body).collect { event ->
                     when (event) {
                         is DeepSeek.Event.Reasoning -> {
@@ -469,6 +500,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
+                break
+                } catch (e: DeepSeek.ApiException) {
+                    // 传过的图片在服务端过期或被删了：清掉记录，改成内联再试一次
+                    val fileProblem = e.code in 400..404 && e.message.orEmpty().contains("file", ignoreCase = true)
+                    if (retried || ids.isEmpty() || content.isNotEmpty() || reasoning.isNotEmpty() || !fileProblem) throw e
+                    retried = true
+                    files.forget()
+                    ids = emptyMap()
+                    body = withContext(Dispatchers.IO) { build(ids) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: DeepSeek.ApiException) {
@@ -481,7 +522,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 generating = false
                 activity = null
                 update(conversationId, messageId) {
-                    if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) it.copy(thinkSeconds = elapsed(thinkStart)) else it
+                    val m = if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) it.copy(thinkSeconds = elapsed(thinkStart)) else it
+                    if (regenerating != null) m.finishVersion(previous) else m
                 }
                 save()
                 // 角色对话聊长了，悄悄把旧的部分整理进回忆
@@ -513,14 +555,47 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun delete(ids: Set<String>) {
         if (currentId in ids) newChat()
+        val removed = conversations.filter { it.id in ids }
         conversations = conversations.filterNot { it.id in ids }
         save()
+        deleteImagesOf(removed)
     }
 
     fun clearAll() {
         newChat()
+        val removed = conversations
         conversations = emptyList()
         save()
+        deleteImagesOf(removed)
+    }
+
+    /** 对话删了，里面发过的图片文件也删掉 */
+    private fun deleteImagesOf(list: List<Conversation>) {
+        val paths = list.flatMap { c -> c.messages.flatMap { it.images } }
+        if (paths.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { images.delete(paths) }
+    }
+
+    /** 选好、还没发出去的图片 */
+    var pendingImages by mutableStateOf(listOf<String>())
+        private set
+    var importingImages by mutableStateOf(false)
+        private set
+
+    /** 从相册选了图：缩小存好，放进待发送 */
+    fun addImages(uris: List<Uri>, onFail: () -> Unit) {
+        if (uris.isEmpty()) return
+        importingImages = true
+        viewModelScope.launch {
+            val paths = withContext(Dispatchers.IO) { uris.take(MAX_IMAGES).map { images.import(it) } }
+            importingImages = false
+            if (paths.any { it == null }) onFail()
+            pendingImages = (pendingImages + paths.filterNotNull()).take(MAX_IMAGES)
+        }
+    }
+
+    fun removePending(path: String) {
+        pendingImages = pendingImages - path
+        viewModelScope.launch(Dispatchers.IO) { images.delete(listOf(path)) }
     }
 
     private fun save() {
@@ -530,6 +605,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         /** 没头像的角色的底色 */
+        /** 一条消息最多带几张图 */
+        const val MAX_IMAGES = 9
         val PALETTE = listOf(0xFF5B7CFA, 0xFFE58A6E, 0xFF4FA88B, 0xFF9B6FD6, 0xFFF2A65A, 0xFF4A6FA5, 0xFFD46A8C, 0xFF8D7B68)
     }
 }

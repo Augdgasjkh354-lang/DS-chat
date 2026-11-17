@@ -57,6 +57,8 @@ object DeepSeek {
         temperature: Float? = null,
         /** 读链接工具：普通对话一直开着（贴了网址就能读）；角色对话不带，免得创意度失效 */
         readUrl: Boolean = true,
+        /** 图片怎么发：传过 Files API 的给 file 块，没传上的内联 data URL；文件不在了返回 null */
+        image: (String) -> JsonObject? = ::inlineImage,
     ): String {
         val body = buildJsonObject {
             put("model", MODEL)
@@ -78,7 +80,8 @@ object DeepSeek {
                     if (m.isUser && history.getOrNull(i + 1)?.let { !it.isUser && it.noContext } == true) continue
                     add(buildJsonObject {
                         put("role", m.role)
-                        put("content", m.text)
+                        if (m.isUser && m.images.isNotEmpty()) put("content", userContent(m, image))
+                        else put("content", m.text)
                         if (!m.isUser) {
                             val calls = m.toolCalls.takeIf { it.isNotEmpty() }
                                 ?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
@@ -92,6 +95,24 @@ object DeepSeek {
         }
         return body.toString()
     }
+
+    /** 带图片的提问：图片在前、文字在后；找不到的图片不悄悄跳过，告诉模型少了几张 */
+    private fun userContent(m: Message, image: (String) -> JsonObject?) = buildJsonArray {
+        var missing = 0
+        for (path in m.images) {
+            val part = image(path)
+            if (part == null) missing++ else add(part)
+        }
+        val note = if (missing > 0) "（有 $missing 张图片已经找不到了，没能发过来）\n" else ""
+        val text = note + m.text
+        if (text.isNotBlank()) add(buildJsonObject { put("type", "text"); put("text", text) })
+    }
+
+    fun inlineImage(path: String): JsonObject? = ImageStore.dataUrl(path)?.let { url ->
+        buildJsonObject { put("type", "image_url"); put("image_url", buildJsonObject { put("url", url) }) }
+    }
+
+    fun fileImage(id: String) = buildJsonObject { put("type", "file"); put("file_id", id) }
 
     /** 流式的思考是各步连在一起的，前面几步的思考在 server_tool_calls 里，减掉它们就是最后一步 */
     fun lastStepReasoning(all: String, calls: JsonElement?): String {

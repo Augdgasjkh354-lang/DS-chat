@@ -51,6 +51,23 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.jack.dschat.data.ImageStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
@@ -239,11 +256,29 @@ private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UserMessage(message: Message) {
     val colors = LocalColors.current
-    Row(Modifier.fillMaxWidth().padding(start = 56.dp, end = 16.dp, top = 10.dp, bottom = 10.dp), horizontalArrangement = Arrangement.End) {
-        SelectionContainer {
+    var viewing by remember { mutableStateOf<String?>(null) }
+    viewing?.let { path -> ImageViewer(path) { viewing = null } }
+    // 列表项外面套的是 Box，图片和文字要竖着排，包一层 Column
+    Column(Modifier.fillMaxWidth().padding(start = 56.dp, end = 16.dp, top = 10.dp, bottom = 10.dp), horizontalAlignment = Alignment.End) {
+        if (message.images.isNotEmpty()) {
+            // 发的图片：靠右排，一张大一点，多张排成小方块；点开看大图
+            val size = if (message.images.size == 1) 180.dp else 96.dp
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                message.images.forEach { path ->
+                    LocalImage(path, 600, Modifier.size(size).clip(RoundedCornerShape(14.dp)).clickable { viewing = path })
+                }
+            }
+            if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
+        }
+        if (message.text.isNotEmpty()) SelectionContainer {
             Text(
                 message.text,
                 color = colors.text,
@@ -262,7 +297,8 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     // 回答按打字的节奏放出来（思考过程照原速）；接口结束了但字还没放完，也算还在输出
-    val reveal = rememberReveal(message.id, message.text, live = isLast && vm.generating)
+    // 每一版单独记放到哪：切到别的版本直接整段显示，新生成的版本从头放
+    val reveal = rememberReveal("${message.id}#${message.active}", message.text, live = isLast && vm.generating)
     val streaming = isLast && (vm.generating || reveal.shown < message.text.length)
     val text = if (reveal.shown >= message.text.length) message.text else message.text.substring(0, reveal.shown)
     val reasoning = message.reasoning
@@ -271,7 +307,20 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
         Modifier.clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(colors.card).padding(horizontal = 14.dp, vertical = 10.dp)
     } else Modifier
 
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+    // 有好几版时，在最后一条回复上左右滑动换版本（往左是下一版）
+    val canSwipe = isLast && !streaming && message.versionCount > 1
+    val swipeDistance = with(LocalDensity.current) { 72.dp.toPx() }
+    val swipe = if (!canSwipe) Modifier else Modifier.pointerInput(message.id, message.active, message.versionCount) {
+        var total = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { total = 0f },
+            onDragEnd = {
+                if (total <= -swipeDistance) vm.switchVersion(message.id, +1)
+                else if (total >= swipeDistance) vm.switchVersion(message.id, -1)
+            },
+        ) { change, amount -> total += amount; change.consume() }
+    }
+    Column(Modifier.fillMaxWidth().then(swipe).padding(horizontal = 16.dp, vertical = 8.dp)) {
         // 角色对话：回复上面带角色的头像和名字
         vm.currentCharacter?.let { role ->
             Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -348,8 +397,54 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
                     Toast.makeText(context, strings.copied, Toast.LENGTH_SHORT).show()
                 }
                 if (isLast) SmallAction(AppIcons.Refresh, strings.regenerate) { vm.regenerate() }
+                if (isLast && message.versionCount > 1) VersionSwitch(message.active, message.versionCount) { vm.switchVersion(message.id, it) }
             }
         }
+    }
+}
+
+/** 应用私有目录里的一张图；在后台解码，解出来之前是灰底 */
+@Composable
+fun LocalImage(path: String, px: Int, modifier: Modifier) {
+    val colors = LocalColors.current
+    val bitmap by produceState<ImageBitmap?>(null, path, px) {
+        value = withContext(Dispatchers.IO) { ImageStore.thumbnail(path, px)?.asImageBitmap() }
+    }
+    val b = bitmap
+    if (b != null) Image(b, null, modifier, contentScale = ContentScale.Crop)
+    else Box(modifier.background(colors.group))
+}
+
+/** 点开看大图：黑底铺满，点哪都关 */
+@Composable
+private fun ImageViewer(path: String, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val bitmap by produceState<ImageBitmap?>(null, path) {
+            value = withContext(Dispatchers.IO) { ImageStore.thumbnail(path, 2000)?.asImageBitmap() }
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+            bitmap?.let { Image(it, null, Modifier.fillMaxWidth(), contentScale = ContentScale.Fit) }
+        }
+    }
+}
+
+/** 「‹ 2 / 3 ›」：换回复的版本 */
+@Composable
+private fun VersionSwitch(active: Int, count: Int, onSwitch: (Int) -> Unit) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    Row(Modifier.padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            AppIcons.Back, strings.prevVersion,
+            Modifier.size(32.dp).clip(CircleShape).clickable(enabled = active > 0) { onSwitch(-1) }.padding(8.dp),
+            tint = if (active > 0) colors.sub else colors.sub.copy(alpha = 0.3f),
+        )
+        Text("${active + 1} / $count", color = colors.sub, fontSize = 13.sp)
+        Icon(
+            AppIcons.ChevronRight, strings.nextVersion,
+            Modifier.size(32.dp).clip(CircleShape).clickable(enabled = active < count - 1) { onSwitch(+1) }.padding(8.dp),
+            tint = if (active < count - 1) colors.sub else colors.sub.copy(alpha = 0.3f),
+        )
     }
 }
 
@@ -419,11 +514,36 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     val shape = RoundedCornerShape(28.dp)
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+    // 系统的照片选择器，不用申请权限；一次最多 9 张
+    val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
+        vm.addImages(uris) { Toast.makeText(context, strings.imageFailed, Toast.LENGTH_SHORT).show() }
+    }
+    val canSend = text.isNotBlank() || vm.pendingImages.isNotEmpty()
 
     Column(
         Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).fillMaxWidth()
             .clip(shape).background(colors.card).border(1.dp, colors.border, shape).padding(14.dp),
     ) {
+        // 选好还没发的图片：一排缩略图，右上角的叉去掉
+        if (vm.pendingImages.isNotEmpty() || vm.importingImages) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                vm.pendingImages.forEach { path ->
+                    Box {
+                        LocalImage(path, 200, Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)))
+                        Box(
+                            Modifier.align(Alignment.TopEnd).padding(3.dp).size(20.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f))
+                                .clickable { vm.removePending(path) },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(AppIcons.Close, strings.removeImage, Modifier.size(12.dp), tint = Color.White) }
+                    }
+                }
+                if (vm.importingImages) Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.group), contentAlignment = Alignment.Center) { TypingDots() }
+            }
+        }
         BasicTextField(
             value = text,
             onValueChange = { text = it },
@@ -445,10 +565,16 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
                 Chip(AppIcons.Globe, strings.smartSearch, vm.searchOn, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleSearch() }
             }
             Spacer(Modifier.width(8.dp))
-            Icon(AppIcons.PlusCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
+            Icon(
+                AppIcons.PlusCircle, strings.addImage,
+                Modifier.size(40.dp).clip(CircleShape).clickable {
+                    pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }.padding(5.dp),
+                tint = colors.text,
+            )
             Spacer(Modifier.width(2.dp))
             // 右下角的按钮：生成中是停止，有字是发送，否则是语音；切换时淡入淡出
-            Crossfade(if (vm.generating) 0 else if (text.isNotBlank()) 1 else 2, label = "action") { state ->
+            Crossfade(if (vm.generating) 0 else if (canSend) 1 else 2, label = "action") { state ->
                 Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
                     when (state) {
                         0 -> Box(
