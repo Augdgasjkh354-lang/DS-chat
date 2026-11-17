@@ -15,12 +15,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jack.dschat.data.ChatStore
 import com.jack.dschat.data.Conversation
-import com.jack.dschat.data.Demo
+import com.jack.dschat.data.DeepSeek
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
+import com.jack.dschat.ui.Chinese
+import com.jack.dschat.ui.English
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -37,6 +39,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var currentId by mutableStateOf<String?>(null)
         private set
     var generating by mutableStateOf(false)
+        private set
+    /** 正在上网做的事（「正在搜索：…」），生成时顶在回复上面；null 是没在搜 */
+    var activity by mutableStateOf<String?>(null)
+        private set
+
+    /** DeepSeek 开放平台的 API Key，只存在这台手机上 */
+    var apiKey by mutableStateOf(prefs.getString("apiKey", "").orEmpty())
         private set
 
     // 设置
@@ -70,7 +79,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { background = withContext(Dispatchers.IO) { backgrounds.load()?.asImageBitmap() } }
         viewModelScope.launch {
             conversations = withContext(Dispatchers.IO) {
-                store.load() ?: Demo.seed(System.currentTimeMillis()).also { store.save(it) }
+                store.load().orEmpty()
             }
         }
     }
@@ -78,6 +87,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun updateTheme(mode: Int) { themeMode = mode; prefs.edit().putInt("theme", mode).apply() }
     fun updateFontScale(scale: Float) { fontScale = scale; prefs.edit().putFloat("font", scale).apply() }
     fun updateEnglish(on: Boolean) { english = on; prefs.edit().putBoolean("english", on).apply() }
+    fun updateApiKey(key: String) { apiKey = key.trim(); prefs.edit().putString("apiKey", apiKey).apply() }
+
+    /** 查余额（顺便验证 Key）。成功给余额文字，失败给错误说明 */
+    fun checkBalance(key: String, onResult: (ok: Boolean, text: String) -> Unit) {
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { DeepSeek.balance(key.trim()) } }
+            result.fold(
+                onSuccess = { onResult(true, strings.balance(it)) },
+                onFailure = { e ->
+                    onResult(false, if (e is DeepSeek.ApiException) strings.apiError(e.code, e.message.orEmpty()) else strings.networkError)
+                },
+            )
+        }
+    }
+
     fun toggleThink() { think = !think; prefs.edit().putBoolean("think", think).apply() }
     fun toggleSearch() { search = !search; prefs.edit().putBoolean("search", search).apply() }
 
@@ -121,7 +146,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             conversations.map { if (it.id == id) it.copy(updatedAt = now, messages = it.messages + userMessage) else it }
         }
         currentId = id
-        answer(id, content)
+        answer(id)
     }
 
     /** 把最后一条回复删掉，重新回答一遍 */
@@ -129,13 +154,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val conversation = current ?: return
         if (generating) return
         val last = conversation.messages.lastOrNull() ?: return
-        val question = conversation.messages.lastOrNull { it.isUser } ?: return
+        if (conversation.messages.none { it.isUser }) return
         if (!last.isUser) {
             conversations = conversations.map {
                 if (it.id == conversation.id) it.copy(messages = it.messages.dropLast(1)) else it
             }
         }
-        answer(conversation.id, question.text)
+        answer(conversation.id)
     }
 
     fun stop() {
@@ -143,37 +168,83 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         job = null
     }
 
-    private fun answer(conversationId: String, question: String) {
+    private fun answer(conversationId: String) {
+        val conversation = conversations.firstOrNull { it.id == conversationId } ?: return
+        val history = conversation.messages
         val messageId = UUID.randomUUID().toString()
-        val withThinking = think
-        val reasoning = Demo.reasoning(question, english)
-        val reply = Demo.reply(question, english, search)
+        val text = if (english) English else Chinese
         append(conversationId, Message(messageId, "assistant", "", time = System.currentTimeMillis()))
+        val key = apiKey
+        if (key.isBlank()) {
+            update(conversationId, messageId) { it.copy(error = text.noKey) }
+            save()
+            return
+        }
+        // 第一轮让模型顺手起个标题；用户手动改过名字的不动
+        val wantTitle = history.count { it.isUser } == 1
+        val body = DeepSeek.requestBody(history, think, search, wantTitle)
         generating = true
         job = viewModelScope.launch {
+            var thinkStart = 0L
             try {
-                delay(400)
-                if (withThinking) {
-                    val start = System.currentTimeMillis()
-                    for (piece in reasoning.chunked(2)) {
-                        delay(24)
-                        update(conversationId, messageId) { it.copy(reasoning = it.reasoning + piece) }
+                DeepSeek.stream(key, body).collect { event ->
+                    when (event) {
+                        is DeepSeek.Event.Reasoning -> {
+                            if (thinkStart == 0L) thinkStart = System.currentTimeMillis()
+                            update(conversationId, messageId) { it.copy(reasoning = it.reasoning + event.text) }
+                        }
+                        is DeepSeek.Event.Content -> update(conversationId, messageId) {
+                            // 正文开始出来，思考就算结束了
+                            val seconds = if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) elapsed(thinkStart) else it.thinkSeconds
+                            it.copy(text = it.text + event.text, thinkSeconds = seconds)
+                        }
+                        is DeepSeek.Event.ToolStarted -> {
+                            val what = event.queries.ifEmpty { listOfNotNull(event.url) }
+                            activity = when {
+                                event.queries.isNotEmpty() -> text.searching(event.queries.joinToString("、"))
+                                event.url != null -> text.reading(event.url)
+                                else -> text.searchingWeb
+                            }
+                            update(conversationId, messageId) { it.copy(searches = it.searches + what) }
+                        }
+                        is DeepSeek.Event.ToolDone -> activity = null
+                        is DeepSeek.Event.Title -> if (wantTitle) {
+                            conversations = conversations.map { if (it.id == conversationId) it.copy(title = event.title) else it }
+                        }
+                        is DeepSeek.Event.Finish -> update(conversationId, messageId) {
+                            it.copy(
+                                sources = event.cited,
+                                toolCalls = event.toolCalls,
+                                error = when (event.reason) {
+                                    "content_filter" -> text.refused
+                                    "length" -> text.truncated
+                                    else -> ""
+                                },
+                            )
+                        }
+                        is DeepSeek.Event.Failure -> update(conversationId, messageId) { it.copy(error = text.failed(event.message)) }
                     }
-                    val seconds = ((System.currentTimeMillis() - start) / 1000).toInt().coerceAtLeast(1)
-                    update(conversationId, messageId) { it.copy(thinkSeconds = seconds) }
                 }
-                for (piece in reply.chunked(2)) {
-                    delay(24)
-                    update(conversationId, messageId) { it.copy(text = it.text + piece) }
-                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: DeepSeek.ApiException) {
+                update(conversationId, messageId) { it.copy(error = text.apiError(e.code, e.message.orEmpty())) }
+            } catch (e: Exception) {
+                update(conversationId, messageId) { it.copy(error = text.networkError) }
             } finally {
                 // 被停止时也走这里：已经出来的字留着，存盘
                 generating = false
-                update(conversationId, messageId) { if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) it.copy(thinkSeconds = 1) else it }
+                activity = null
+                update(conversationId, messageId) {
+                    if (it.reasoning.isNotEmpty() && it.thinkSeconds == 0) it.copy(thinkSeconds = elapsed(thinkStart)) else it
+                }
                 save()
             }
         }
     }
+
+    private fun elapsed(start: Long) =
+        if (start == 0L) 1 else ((System.currentTimeMillis() - start) / 1000).toInt().coerceAtLeast(1)
 
     private fun append(conversationId: String, message: Message) {
         conversations = conversations.map { if (it.id == conversationId) it.copy(messages = it.messages + message) else it }

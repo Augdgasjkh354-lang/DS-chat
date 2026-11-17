@@ -11,7 +11,7 @@ class ChatStore(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
     private val serializer = ListSerializer(Conversation.serializer())
 
-    /** 还没存过返回 null（第一次打开，用来决定要不要放演示数据） */
+    /** 还没存过返回 null */
     fun load(): List<Conversation>? {
         if (!file.exists()) return null
         return runCatching { json.decodeFromString(serializer, file.readText()) }.getOrDefault(emptyList())

@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -167,7 +168,7 @@ private fun MessageList(vm: ChatViewModel, messages: List<Message>) {
     val listState = rememberLazyListState()
     val last = messages.last()
     // 换对话、来新消息、流式输出时都滚到最底下（最后一项是个垫底的空白）
-    LaunchedEffect(vm.currentId, messages.size, last.text.length, last.reasoning.length) {
+    LaunchedEffect(vm.currentId, messages.size, last.text.length, last.reasoning.length, last.error, vm.activity) {
         listState.scrollToItem(messages.size)
     }
     LazyColumn(
@@ -244,17 +245,40 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
             Spacer(Modifier.height(12.dp))
         }
 
-        if (message.text.isEmpty() && message.reasoning.isEmpty() && streaming) {
-            TypingDots()
-        } else if (message.text.isNotEmpty()) {
-            SelectionContainer {
-                Text(message.text, color = colors.text, fontSize = 16.sp, lineHeight = 26.sp, modifier = plate)
+        // 联网：生成中显示正在做什么，结束后留一行「联网搜索 N 次」
+        val activity = if (streaming) vm.activity else null
+        if (activity != null || message.searches.isNotEmpty()) {
+            Row(Modifier.padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(AppIcons.Globe, null, Modifier.size(15.dp), tint = colors.sub)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    activity ?: strings.searched(message.searches.size), color = colors.sub, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
         }
 
-        if (!streaming && message.text.isNotEmpty()) {
+        if (message.text.isEmpty() && message.reasoning.isEmpty() && message.error.isEmpty() && streaming && activity == null) {
+            TypingDots()
+        } else if (message.text.isNotEmpty()) {
+            SelectionContainer {
+                MarkdownText(message.text, modifier = plate)
+            }
+        }
+
+        if (message.error.isNotEmpty()) {
+            Text(
+                message.error, color = colors.danger, fontSize = 14.sp, lineHeight = 21.sp,
+                modifier = Modifier.padding(top = if (message.text.isEmpty()) 0.dp else 10.dp)
+                    .clip(RoundedCornerShape(12.dp)).background(colors.danger.copy(alpha = 0.08f)).padding(horizontal = 12.dp, vertical = 9.dp),
+            )
+        }
+
+        if (message.sources.isNotEmpty() && !streaming) Sources(message)
+
+        if (!streaming && (message.text.isNotEmpty() || message.error.isNotEmpty())) {
             Row(Modifier.padding(top = 6.dp)) {
-                SmallAction(AppIcons.Copy, strings.copy) {
+                if (message.text.isNotEmpty()) SmallAction(AppIcons.Copy, strings.copy) {
                     clipboard.setText(AnnotatedString(message.text))
                     Toast.makeText(context, strings.copied, Toast.LENGTH_SHORT).show()
                 }
@@ -263,6 +287,56 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
         }
     }
 }
+
+/** 回答引用的网页：收起时是一颗「引用 N 个网页」，点开是列表，点一条用浏览器打开 */
+@Composable
+private fun Sources(message: Message) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    val uriHandler = LocalUriHandler.current
+    var expanded by rememberSaveable(message.id + "src") { mutableStateOf(false) }
+    Column(Modifier.padding(top = 12.dp)) {
+        Row(
+            Modifier.clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape)
+                .clickable { expanded = !expanded }.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(AppIcons.Globe, null, Modifier.size(15.dp), tint = colors.sub)
+            Spacer(Modifier.width(6.dp))
+            Text(strings.cited(message.sources.size), color = colors.sub, fontSize = 13.sp)
+            Spacer(Modifier.width(4.dp))
+            val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "srcChevron")
+            Icon(AppIcons.ChevronDown, null, Modifier.size(14.dp).rotate(turn), tint = colors.sub)
+        }
+        AnimatedVisibility(expanded) {
+            Column(
+                Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
+                    .border(1.dp, colors.border, RoundedCornerShape(16.dp)).padding(vertical = 4.dp),
+            ) {
+                message.sources.forEachIndexed { index, source ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { runCatching { uriHandler.openUri(source.url) } }
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                    ) {
+                        Text("${index + 1}", color = colors.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                source.title.ifEmpty { source.url }, color = colors.text, fontSize = 14.sp,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                source.site.ifEmpty { hostOf(source.url) }, color = colors.sub, fontSize = 12.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun hostOf(url: String) = runCatching { java.net.URI(url).host?.removePrefix("www.") }.getOrNull() ?: url
 
 @Composable
 private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {

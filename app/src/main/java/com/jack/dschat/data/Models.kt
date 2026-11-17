@@ -15,9 +15,20 @@ data class Message(
     val reasoning: String = "",
     val thinkSeconds: Int = 0,
     val time: Long = 0,
+    /** 回答引用的网页 */
+    val sources: List<Source> = emptyList(),
+    /** 这次上网做了什么：搜索词或读过的网址，按先后 */
+    val searches: List<String> = emptyList(),
+    /** 接口返回的 server_tool_calls 原文，下一轮要原样传回去 */
+    val toolCalls: String = "",
+    /** 出错时给人看的说明；空的是没出错 */
+    val error: String = "",
 ) {
     val isUser get() = role == "user"
 }
+
+@Serializable
+data class Source(val url: String, val title: String = "", val site: String = "")
 
 @Serializable
 data class Conversation(

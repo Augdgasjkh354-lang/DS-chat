@@ -46,13 +46,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jack.dschat.ChatViewModel
 import kotlin.math.roundToInt
 
-private enum class Page { Root, Language, Font, Data, Personalize }
+private enum class Page { Root, ApiKey, Language, Font, Data, Personalize }
 
 /** 设置：从底下升上来的一整页，圆角顶，右上角关闭 */
 @Composable
@@ -78,6 +84,7 @@ fun SettingsSheet(vm: ChatViewModel, onClose: () -> Unit, onNotReady: () -> Unit
                 Text(
                     when (page) {
                         Page.Root -> strings.settings
+                        Page.ApiKey -> strings.apiKey
                         Page.Language -> strings.language
                         Page.Font -> strings.fontSize
                         Page.Data -> strings.data
@@ -91,6 +98,7 @@ fun SettingsSheet(vm: ChatViewModel, onClose: () -> Unit, onNotReady: () -> Unit
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp)) {
                 when (page) {
                     Page.Root -> RootPage(vm, onNotReady) { page = it }
+                    Page.ApiKey -> ApiKeyPage(vm)
                     Page.Language -> LanguagePage(vm)
                     Page.Font -> FontPage(vm)
                     Page.Data -> DataPage(vm)
@@ -112,7 +120,7 @@ private fun ColumnScope.RootPage(vm: ChatViewModel, onNotReady: () -> Unit, go: 
 
     Section(strings.sectionAccount)
     Card {
-        SettingRow(AppIcons.Person, strings.account, onClick = onNotReady)
+        SettingRow(AppIcons.Person, strings.apiKey, value = if (vm.apiKey.isEmpty()) strings.keyNotSet else strings.keySet) { go(Page.ApiKey) }
         Divider()
         SettingRow(AppIcons.Database, strings.data) { go(Page.Data) }
     }
@@ -153,6 +161,65 @@ private fun ColumnScope.RootPage(vm: ChatViewModel, onNotReady: () -> Unit, go: 
         Divider()
         SettingRow(AppIcons.Doc, strings.terms, onClick = onNotReady)
     }
+}
+
+/** 填 DeepSeek 开放平台的 API Key；保存时顺便查一下余额，确认 Key 能用 */
+@Composable
+private fun ApiKeyPage(vm: ChatViewModel) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    val uriHandler = LocalUriHandler.current
+    var key by rememberSaveable { mutableStateOf(vm.apiKey) }
+    var status by remember { mutableStateOf("") }
+    var ok by remember { mutableStateOf(true) }
+    var checking by remember { mutableStateOf(false) }
+    val check = {
+        checking = true
+        status = strings.checking
+        ok = true
+        vm.checkBalance(key) { good, text -> checking = false; ok = good; status = text }
+    }
+
+    Text(strings.apiKeyIntro, color = colors.sub, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp))
+    Card {
+        BasicTextField(
+            value = key,
+            onValueChange = { key = it.trim(); status = "" },
+            singleLine = true,
+            textStyle = TextStyle(color = colors.text, fontSize = 16.sp, fontFamily = FontFamily.Monospace),
+            cursorBrush = SolidColor(colors.accent),
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+            decorationBox = { inner ->
+                Box {
+                    if (key.isEmpty()) Text("sk-…", color = colors.sub, fontSize = 16.sp, fontFamily = FontFamily.Monospace)
+                    inner()
+                }
+            },
+        )
+        Divider(inset = 20.dp)
+        Text(
+            strings.save, color = if (key.isNotEmpty() && !checking) colors.accent else colors.sub, fontSize = 17.sp,
+            modifier = Modifier.fillMaxWidth().clickable(enabled = key.isNotEmpty() && !checking) {
+                vm.updateApiKey(key)
+                check()
+            }.padding(horizontal = 20.dp, vertical = 16.dp),
+        )
+    }
+    if (status.isNotEmpty()) {
+        Text(status, color = if (ok) colors.sub else colors.danger, fontSize = 14.sp, modifier = Modifier.padding(start = 16.dp, top = 10.dp))
+    }
+    Spacer(Modifier.height(16.dp))
+    Card {
+        Row(
+            Modifier.fillMaxWidth().clickable { uriHandler.openUri("https://platform.deepseek.com/api_keys") }.padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(strings.getKey, color = colors.accent, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Icon(AppIcons.ChevronRight, null, Modifier.size(18.dp), tint = colors.sub)
+        }
+    }
+    Text(strings.usageNote, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
 }
 
 @Composable
