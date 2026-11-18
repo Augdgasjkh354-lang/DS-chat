@@ -238,6 +238,8 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
     var examples by rememberSaveable { mutableStateOf(original?.examples.orEmpty()) }
     var instructions by rememberSaveable { mutableStateOf(original?.instructions.orEmpty()) }
     var creativity by rememberSaveable { mutableStateOf(original?.creativity ?: Character.DEFAULT_CREATIVITY) }
+    var roleVoice by rememberSaveable { mutableStateOf(original?.voice.orEmpty()) }
+    var voiceMenu by remember { mutableStateOf(false) }
     var avatar by remember { mutableStateOf<Uri?>(null) }
     var more by rememberSaveable { mutableStateOf(listOf(personality, scenario, examples, instructions).any { it.isNotBlank() }) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -273,7 +275,7 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
     fun edited() = draft.copy(
         name = name.trim(), description = desc.trim(), greeting = greeting.trim(), personality = personality.trim(),
         scenario = scenario.trim(), examples = examples.trim(), instructions = instructions.trim(), creativity = creativity,
-        book = book,
+        book = book, voice = roleVoice,
     )
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
         if (uri != null) vm.exportCard(edited(), avatar, uri) { _, text -> Toast.makeText(context, text, Toast.LENGTH_SHORT).show() }
@@ -326,6 +328,23 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
     }
     Card {
         SettingRow(AppIcons.Doc, strings.lorebook, value = strings.loreCount(book.entries.size)) { lore = -1 }
+        Divider()
+        // 角色自己的朗读音色：选了念一句试听
+        Box {
+            val options = listOf("" to strings.voiceDefault, "stella" to strings.voiceFemale, "tide" to strings.voiceMale)
+            SettingRow(AppIcons.Speaker, strings.voice, value = options.firstOrNull { it.first == roleVoice }?.second ?: strings.voiceDefault, trailing = AppIcons.UpDown) { voiceMenu = true }
+            Box(Modifier.align(Alignment.TopEnd)) {
+                androidx.compose.material3.DropdownMenu(expanded = voiceMenu, onDismissRequest = { voiceMenu = false }) {
+                    options.forEach { (v, label) ->
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text(label) },
+                            trailingIcon = { if (v == roleVoice) Icon(AppIcons.Check, null, Modifier.size(18.dp), tint = colors.accent) },
+                            onClick = { roleVoice = v; voiceMenu = false; vm.previewVoice(v) },
+                        )
+                    }
+                }
+            }
+        }
     }
     Spacer(Modifier.height(10.dp))
     AnimatedVisibility(more) {

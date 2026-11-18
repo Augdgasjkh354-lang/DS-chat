@@ -44,6 +44,8 @@ data class Character(
     val createdAt: Long = 0,
     /** 世界书：和角色绑在一起的背景资料，提到关键词时才告诉模型（卡里的 character_book） */
     val book: Lorebook = Lorebook(),
+    /** 朗读音色（stella / tide）；空的跟着设置里的走 */
+    val voice: String = "",
 ) {
     companion object {
         const val DEFAULT_CREATIVITY = 1.3f
@@ -125,6 +127,8 @@ object CharacterCard {
             instructions = instructions,
             creativity = ((data["extensions"] as? JsonObject)?.get(EXT) as? JsonObject)?.let { (it["creativity"] as? JsonPrimitive)?.contentOrNull?.toFloatOrNull() }
                 ?.coerceIn(0f, 2f) ?: Character.DEFAULT_CREATIVITY,
+            voice = ((data["extensions"] as? JsonObject)?.get(EXT) as? JsonObject)?.let { (it["voice"] as? JsonPrimitive)?.contentOrNull }
+                ?.takeIf { it in Tts.VOICES }.orEmpty(),
         )
     }
 
@@ -150,7 +154,7 @@ object CharacterCard {
             putJsonArray("tags") {}
             put("creator", "")
             put("character_version", "")
-            putJsonObject("extensions") { putJsonObject(EXT) { put("creativity", c.creativity) } }
+            putJsonObject("extensions") { putJsonObject(EXT) { put("creativity", c.creativity); if (c.voice.isNotEmpty()) put("voice", c.voice) } }
             if (c.book.entries.isNotEmpty()) put("character_book", Lore.cardBook(c.book, c.name))
             if (v3) {
                 putJsonArray("group_only_greetings") {}

@@ -58,7 +58,7 @@ import androidx.compose.ui.unit.sp
 import com.jack.dschat.ChatViewModel
 import kotlin.math.roundToInt
 
-private enum class Page { Root, ApiKey, Language, Font, Data, Personalize }
+private enum class Page { Root, ApiKey, Language, Font, Data, Personalize, About }
 
 /** 设置：从底下升上来的一整页，圆角顶，右上角关闭 */
 @Composable
@@ -89,6 +89,7 @@ fun SettingsSheet(vm: ChatViewModel, onClose: () -> Unit, onNotReady: () -> Unit
                         Page.Font -> strings.fontSize
                         Page.Data -> strings.data
                         Page.Personalize -> strings.personalize
+                        Page.About -> strings.checkUpdate
                     },
                     color = colors.text, fontSize = 19.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.Center),
@@ -103,6 +104,7 @@ fun SettingsSheet(vm: ChatViewModel, onClose: () -> Unit, onNotReady: () -> Unit
                     Page.Font -> FontPage(vm)
                     Page.Data -> DataPage(vm)
                     Page.Personalize -> PersonalizePage(vm)
+                    Page.About -> AboutPage()
                 }
             }
         }
@@ -177,7 +179,7 @@ private fun ColumnScope.RootPage(vm: ChatViewModel, onNotReady: () -> Unit, go: 
 
     Section(strings.sectionAbout)
     Card {
-        SettingRow(AppIcons.Info, strings.checkUpdate, value = version, onClick = onNotReady)
+        SettingRow(AppIcons.Info, strings.checkUpdate, value = version) { go(Page.About) }
         Divider()
         SettingRow(AppIcons.Doc, strings.terms, onClick = onNotReady)
     }
@@ -322,6 +324,42 @@ private fun DataPage(vm: ChatViewModel) {
         Text(status, color = if (ok) colors.accent else colors.danger, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
     }
     Text(strings.importHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+    // 备份和恢复
+    val context = LocalContext.current
+    var confirmRestore by remember { mutableStateOf<android.net.Uri?>(null) }
+    val backupTarget = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) { status = strings.backingUp; ok = true; vm.exportBackup(uri) { good, text -> ok = good; status = text } }
+    }
+    val restoreSource = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) confirmRestore = uri }
+    Spacer(Modifier.height(20.dp))
+    Card {
+        SettingRow(AppIcons.Export, strings.backup) {
+            if (!vm.backingUp) backupTarget.launch("DSChat-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date()) + ".zip")
+        }
+        Divider()
+        SettingRow(AppIcons.Import, strings.restore) {
+            if (!vm.backingUp) restoreSource.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+        }
+    }
+    Text(strings.backupHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+    confirmRestore?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { confirmRestore = null },
+            title = { Text(strings.restore) },
+            text = { Text(strings.restoreConfirm) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmRestore = null
+                    status = strings.backingUp; ok = true
+                    vm.restoreBackup(uri) { good, text ->
+                        ok = good; status = text
+                        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(strings.restore, color = colors.danger) }
+            },
+            dismissButton = { TextButton(onClick = { confirmRestore = null }) { Text(strings.cancel) } },
+        )
+    }
     Spacer(Modifier.height(20.dp))
     Card {
         Row(
@@ -341,6 +379,33 @@ private fun DataPage(vm: ChatViewModel) {
             confirmButton = { TextButton(onClick = { vm.clearAll(); confirm = false }) { Text(strings.delete, color = colors.danger) } },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text(strings.cancel) } },
         )
+    }
+}
+
+/** 检查更新：版本号和联系方式（联系方式在 Strings.contact 里填，空着显示「待补充」） */
+@Composable
+private fun ColumnScope.AboutPage() {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    val context = LocalContext.current
+    val version = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
+    }
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.jack.dschat.R.drawable.logo), null, Modifier.size(72.dp))
+        Text(strings.appName, color = colors.text, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
+        Text(strings.versionLabel(version), color = colors.sub, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+    }
+    Text(strings.updateHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp))
+    Section(strings.contactTitle)
+    Card {
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(
+                strings.contact.ifBlank { strings.contactPending },
+                color = if (strings.contact.isBlank()) colors.sub else colors.text, fontSize = 16.sp, lineHeight = 24.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            )
+        }
     }
 }
 

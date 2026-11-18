@@ -151,3 +151,189 @@ class Speaker(context: Context) {
         runCatching { track?.let { it.pause(); it.flush() } }
     }
 }
+
+/**
+ * 边生成边念时把正文切成能送去合成的小块：整行或到句末标点就送；代码块（``` 围起来的）整段不送。
+ * 纯逻辑，方便测试
+ */
+class SpeechFilter {
+    private val buf = StringBuilder()
+    private var inCode = false
+    private var atLineStart = true
+
+    /** 收到一段新正文，返回现在可以送去念的文字（可能是空的） */
+    fun feed(delta: String): String {
+        buf.append(delta)
+        val out = StringBuilder()
+        while (true) {
+            val nl = buf.indexOf("\n")
+            if (nl >= 0) {
+                val line = buf.substring(0, nl)
+                buf.delete(0, nl + 1)
+                line(line, out)
+                continue
+            }
+            // 没换行：在代码块里、或者这一行可能是 ``` 开头，先等等
+            if (inCode || buf.isEmpty()) break
+            if (atLineStart && buf.trimStart().let { it.isEmpty() || it.startsWith("`") }) break
+            val cut = buf.indexOfLast { it in PUNCT }
+            if (cut < 0) break
+            out.append(buf, 0, cut + 1)
+            buf.delete(0, cut + 1)
+            atLineStart = false
+            break
+        }
+        return out.toString()
+    }
+
+    /** 正文写完了：剩下的都送出去（没关上的代码块不念） */
+    fun finish(): String {
+        val out = StringBuilder()
+        if (buf.isNotEmpty()) line(buf.toString(), out)
+        buf.clear()
+        return out.toString().trimEnd()
+    }
+
+    private fun line(line: String, out: StringBuilder) {
+        if (atLineStart && line.trimStart().startsWith("```")) inCode = !inCode
+        else if (!inCode) out.append(line).append('\n')
+        atLineStart = true
+    }
+
+    private companion object {
+        const val PUNCT = "。！？!?；;…，,：:"
+    }
+}
+
+/**
+ * 边生成边念：用 DeepSeek 朗读的 WebSocket（wss://…/v1/tools/tts），正文一边出来一边送过去，声音一边回来一边放。
+ * 一个会话最多 1 万计费字符、60 秒没收到文字会被断开，所以超了或断了就接着开下一个会话。
+ */
+class StreamSpeech(private val apiKey: String, private val voice: String, context: Context) {
+    private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val filter = SpeechFilter()
+    private val texts = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+
+    /** 收到一段正文 */
+    fun push(delta: String) {
+        filter.feed(delta).takeIf { it.isNotBlank() }?.let { texts.trySend(it) }
+    }
+
+    /** 正文写完了（或被停了）：剩下的念完就结束 */
+    fun finish() {
+        filter.finish().takeIf { it.isNotBlank() }?.let { texts.trySend(it) }
+        texts.close()
+    }
+
+    /** 服务端结束会话时报的错 */
+    class SpeechError(val code: String, message: String) : java.io.IOException("$code: $message")
+
+    /** 念完才返回；协程被取消时立刻停 */
+    suspend fun run() = withContext(Dispatchers.IO) {
+        val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+        val format = AudioFormat.Builder().setSampleRate(Tts.SAMPLE_RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()
+        val min = AudioTrack.getMinBufferSize(Tts.SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val track = AudioTrack.Builder().setAudioAttributes(attrs).setAudioFormat(format)
+            .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(min, Tts.SAMPLE_RATE)).build()
+        val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK).setAudioAttributes(attrs).build()
+        val closedFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+        val written = java.util.concurrent.atomic.AtomicLong(0)
+        var focused = false
+        var socket: okhttp3.WebSocket? = null
+        val client = okhttp3.OkHttpClient.Builder().readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        try {
+            var carried: String? = null
+            var ended = false
+            while (!ended) {
+                // 等到有字才连（模型深度思考可能很久，先连上会因为 60 秒没字被断开）
+                val first = carried ?: texts.receiveCatching().getOrNull() ?: break
+                carried = null
+                if (!focused) { audio.requestAudioFocus(focus); track.play(); focused = true }
+                val finished = kotlinx.coroutines.CompletableDeferred<Unit>()
+                var odd = -1
+                val url = "wss://api.deepseek.com/v1/tools/tts?voice_id=$voice&format=pcm&filter_markdown=true"
+                val ws = client.newWebSocket(
+                    okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $apiKey").build(),
+                    object : okhttp3.WebSocketListener() {
+                        override fun onMessage(webSocket: okhttp3.WebSocket, bytes: okio.ByteString) {
+                            if (closedFlag.get()) return
+                            var data = bytes.toByteArray()
+                            // 16 位采样两个字节一组：上一帧多出来的一个字节接在前面
+                            if (odd >= 0) { data = byteArrayOf(odd.toByte()) + data; odd = -1 }
+                            var len = data.size
+                            if (len % 2 == 1) { odd = data[len - 1].toInt() and 0xFF; len-- }
+                            if (len > 0 && !closedFlag.get()) { track.write(data, 0, len); written.addAndGet(len / 2L) }
+                        }
+
+                        override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                            val o = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) as? kotlinx.serialization.json.JsonObject }.getOrNull() ?: return
+                            if ((o["event"] as? kotlinx.serialization.json.JsonPrimitive)?.content != "finish") return
+                            val code = (o["code"] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+                            val msg = (o["message"] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+                            // 60 秒没字被断开不算错：后面还有字就再开一个会话
+                            if (code == "success" || code == "input_timeout") finished.complete(Unit)
+                            else finished.completeExceptionally(SpeechError(code, msg))
+                        }
+
+                        override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                            val code = response?.code
+                            finished.completeExceptionally(if (code != null && code >= 400) DeepSeek.ApiException(code, response.message) else t)
+                        }
+
+                        override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) { finished.complete(Unit) }
+                    },
+                )
+                socket = ws
+                var billed = 0
+                fun send(text: String): Boolean {
+                    val cost = Tts.billed(text)
+                    if (billed > 0 && billed + cost > SESSION_BILLED) return false
+                    ws.send(buildJsonObject { put("event", "text"); put("text", text) }.toString())
+                    billed += cost
+                    return true
+                }
+                // 一块太长先切小
+                val queue = ArrayDeque(Tts.split(first, SESSION_BILLED))
+                while (true) {
+                    val next = queue.removeFirstOrNull() ?: kotlinx.coroutines.selects.select<String?> {
+                        texts.onReceiveCatching { r -> r.getOrNull().also { if (it == null) ended = true } }
+                        finished.onAwait { null }
+                    } ?: break
+                    if (finished.isCompleted) { carried = next; break } // 会话已经被关了，这块留给下一个会话
+                    val parts = Tts.split(next, SESSION_BILLED)
+                    if (!send(parts.first())) { carried = next; break }
+                    queue.addAll(0, parts.drop(1))
+                }
+                if (queue.isNotEmpty()) carried = (listOfNotNull(carried) + queue).joinToString("\n")
+                if (!finished.isCompleted) ws.send("""{"event":"finish_text"}""")
+                finished.await()
+                ws.close(1000, null)
+                socket = null
+            }
+            if (focused) {
+                // 等缓冲里剩下的放完
+                track.stop()
+                val frames = written.get()
+                val deadline = System.currentTimeMillis() + (frames - track.playbackHeadPosition) * 1000 / Tts.SAMPLE_RATE + 1000
+                while (track.playbackHeadPosition < frames && System.currentTimeMillis() < deadline) {
+                    ensureActive()
+                    delay(50)
+                }
+            }
+        } finally {
+            closedFlag.set(true)
+            socket?.cancel()
+            texts.cancel()
+            runCatching { track.pause(); track.flush() }
+            track.release()
+            if (focused) audio.abandonAudioFocusRequest(focus)
+            client.dispatcher.executorService.shutdown()
+        }
+    }
+
+    private companion object {
+        /** 一个会话的计费字符上限（接口是 1 万），留点余量 */
+        const val SESSION_BILLED = 9_000
+    }
+}

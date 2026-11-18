@@ -43,3 +43,39 @@ class TtsTest {
         assertEquals("你好", o["text"]!!.jsonPrimitive.content)
     }
 }
+
+class SpeechFilterTest {
+    private fun run(vararg deltas: String): String {
+        val f = com.jack.dschat.data.SpeechFilter()
+        val out = StringBuilder()
+        deltas.forEach { out.append(f.feed(it)) }
+        out.append(f.finish())
+        return out.toString()
+    }
+
+    @Test
+    fun sendsAtSentenceEnds() {
+        val f = com.jack.dschat.data.SpeechFilter()
+        assertEquals("", f.feed("你好"))
+        assertEquals("你好，", f.feed("，今天"))
+        assertEquals("今天天气不错。", f.feed("天气不错。明"))
+        assertEquals("明天\n", f.feed("天\n"))
+        assertEquals("", f.feed("见"))
+        assertEquals("见", f.finish())
+    }
+
+    @Test
+    fun skipsCodeBlocksAcrossDeltas() {
+        assertEquals("看代码：\n就这样。", run("看代码：\n``", "`kotlin\nval a = 1", "。\n```\n就这样。"))
+    }
+
+    @Test
+    fun unclosedCodeIsDropped() {
+        assertEquals("开头\n", run("开头\n```py\nprint(1)"))
+    }
+
+    @Test
+    fun keepsInlineBackticksOutsideLineStart() {
+        assertEquals("用 `ls` 看看。", run("用 `ls` 看看。"))
+    }
+}

@@ -36,12 +36,15 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Speaker
+import com.jack.dschat.data.StreamSpeech
+import com.jack.dschat.data.Backup
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import com.jack.dschat.data.Attachment
 import com.jack.dschat.data.Documents
 import android.provider.OpenableColumns
 import com.jack.dschat.data.Tts
 import android.widget.Toast
-import kotlinx.coroutines.isActive
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
 import com.jack.dschat.data.switchTo
@@ -439,9 +442,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         speakText("sample", (if (english) English else Chinese).voiceSample)
     }
 
-    /** 点回复下面的喇叭：没在念就念，正在念就停 */
+    /** 试听某个音色（角色编辑页用） */
+    fun previewVoice(v: String) = speakText("sample", (if (english) English else Chinese).voiceSample, v.takeIf { it in Tts.VOICES } ?: voice)
+
+    /** 点回复下面的喇叭：没在念就念，正在念就停。角色对话用角色自己的音色 */
     fun toggleSpeak(m: Message) {
-        if (speakingId == m.id) stopSpeaking() else speakText(m.id, m.text)
+        if (speakingId == m.id) return stopSpeaking()
+        val conv = conversations.firstOrNull { c -> c.messages.any { it.id == m.id } }
+        speakText(m.id, m.text, voiceFor(character(conv?.characterId)))
+    }
+
+    /** 这个角色念的时候用哪个音色 */
+    fun voiceFor(role: Character?) = role?.voice?.takeIf { it in Tts.VOICES } ?: voice
+
+    /** 开了自动朗读时，回复一边生成一边念：返回接正文的那头；没开返回 null */
+    private fun startLiveSpeech(messageId: String, voice: String): StreamSpeech? {
+        stopSpeaking()
+        val key = apiKey
+        if (key.isBlank()) return null
+        val strings = if (english) English else Chinese
+        val live = StreamSpeech(key, voice, getApplication())
+        speakingId = messageId
+        var me: Job? = null
+        me = viewModelScope.launch {
+            try {
+                live.run()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: DeepSeek.ApiException) {
+                Toast.makeText(getApplication(), strings.speakError(strings.apiError(e.code, e.message.orEmpty())), Toast.LENGTH_LONG).show()
+            } catch (e: StreamSpeech.SpeechError) {
+                Toast.makeText(getApplication(), strings.speakError(e.message.orEmpty()), Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(getApplication(), strings.speakError(strings.networkError), Toast.LENGTH_LONG).show()
+            } finally {
+                if (speakJob === me) { speakJob = null; speakingId = null }
+            }
+        }
+        speakJob = me
+        return live
     }
 
     fun stopSpeaking() {
@@ -451,7 +490,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         speakingId = null
     }
 
-    private fun speakText(id: String, text: String) {
+    private fun speakText(id: String, text: String, voice: String = this.voice) {
         stopSpeaking()
         val strings = if (english) English else Chinese
         val key = apiKey
@@ -579,6 +618,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         generating = true
+        // 自动朗读：一边生成一边念（角色对话用角色的音色）
+        val live = if (autoRead && currentId == conversationId) startLiveSpeech(messageId, voiceFor(role)) else null
         job = viewModelScope.launch {
             var thinkStart = 0L
             var thinkSeconds = 0
@@ -610,6 +651,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             // 正文开始出来，思考就算结束了
                             if (reasoning.isNotEmpty() && thinkSeconds == 0) thinkSeconds = elapsed(thinkStart)
                             content.append(event.text)
+                            live?.push(event.text)
                             maybeFlush()
                         }
                         is DeepSeek.Event.ToolStarted -> {
@@ -672,11 +714,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (regenerating != null) m.finishVersion(previous) else m
                 }
                 save()
-                // 开了自动朗读：好好写完的回复（不是被停掉、没出错）念出来；还停在这个对话才念
-                if (autoRead && isActive && currentId == conversationId) {
-                    conversations.firstOrNull { it.id == conversationId }?.messages?.firstOrNull { it.id == messageId }
-                        ?.takeIf { it.error.isEmpty() && it.text.isNotBlank() }?.let { speakText(it.id, it.text) }
-                }
+                // 正文写完（或被停了）：已经出来的念完为止
+                live?.finish()
                 // 角色对话聊长了，悄悄把旧的部分整理进回忆
                 if (role != null) remember(conversationId)
             }
@@ -728,6 +767,102 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val ids = list.flatMap { c -> c.messages.flatMap { m -> m.files.map { it.fileId } } }.distinct()
         val key = apiKey
         if (ids.isNotEmpty() && key.isNotBlank()) viewModelScope.launch(Dispatchers.IO) { ids.forEach { Documents.delete(key, it) } }
+    }
+
+    /** 正在备份或恢复 */
+    var backingUp by mutableStateOf(false)
+        private set
+
+    private val backupJson = Json { ignoreUnknownKeys = true }
+
+    /** 备份到用户选的位置。onResult(成功与否, 说明) */
+    fun exportBackup(target: Uri, onResult: (Boolean, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        if (backingUp) return
+        backingUp = true
+        val chats = conversations
+        val saved = CharacterStore.Saved(characters, persona)
+        val settings = Backup.SETTINGS.keys.associateWith { prefs.all[it] }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    app.contentResolver.openOutputStream(target, "wt")?.use { out ->
+                        Backup.write(
+                            out, app.filesDir,
+                            backupJson.encodeToString(ListSerializer(Conversation.serializer()), chats),
+                            backupJson.encodeToString(CharacterStore.Saved.serializer(), saved),
+                            settings, System.currentTimeMillis(),
+                        )
+                    } ?: error("no output")
+                }.isSuccess
+            }
+            backingUp = false
+            onResult(ok, if (ok) strings.backupDone(chats.size, saved.characters.size) else strings.backupFailed)
+        }
+    }
+
+    /** 从备份恢复：现有的对话、角色、背景、设置整个换掉（API Key 不动） */
+    fun restoreBackup(source: Uri, onResult: (Boolean, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        if (backingUp) return
+        backingUp = true
+        stopSpeaking()
+        stop()
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val staging = java.io.File(app.cacheDir, "restore")
+                    val r = app.contentResolver.openInputStream(source)?.use { Backup.read(it, staging, strings.notABackup, strings.backupTooNew) }
+                        ?: throw Backup.BackupException(strings.notABackup)
+                    // 先确认内容读得出来，再动现有数据
+                    val chats = runCatching { backupJson.decodeFromString(ListSerializer(Conversation.serializer()), r.chats) }
+                        .getOrElse { throw Backup.BackupException(strings.notABackup) }
+                    val saved = r.characters?.let { runCatching { backupJson.decodeFromString(CharacterStore.Saved.serializer(), it) }.getOrNull() }
+                        ?: CharacterStore.Saved()
+                    Backup.install(r.staging, app.filesDir)
+                    val moved = Backup.relocate(chats, java.io.File(app.filesDir, "images"))
+                    store.save(moved)
+                    roles.save(saved)
+                    val pics = saved.characters.filter { it.hasAvatar }.mapNotNull { c -> roles.loadAvatar(c.id)?.let { c.id to it.asImageBitmap() } }.toMap()
+                    val bg = backgrounds.load()?.asImageBitmap()
+                    RestoreState(moved, saved, pics, bg, r.settings)
+                }
+            }
+            backingUp = false
+            result.fold(
+                onSuccess = { st ->
+                    currentId = null
+                    conversations = st.chats
+                    characters = st.saved.characters
+                    persona = st.saved.persona
+                    avatars = st.avatars
+                    background = st.background
+                    applySettings(st.settings)
+                    onResult(true, strings.restoreDone(st.chats.size, st.saved.characters.size))
+                },
+                onFailure = { e -> onResult(false, (e as? Backup.BackupException)?.message ?: strings.restoreFailed) },
+            )
+        }
+    }
+
+    private class RestoreState(
+        val chats: List<Conversation>, val saved: CharacterStore.Saved, val avatars: Map<String, ImageBitmap>,
+        val background: ImageBitmap?, val settings: JsonObject,
+    )
+
+    private fun applySettings(settings: JsonObject) {
+        fun <T> get(key: String): T? = @Suppress("UNCHECKED_CAST") (Backup.setting(settings, key) as? T)
+        get<Int>("theme")?.let { updateTheme(it.coerceIn(0, 2)) }
+        get<Float>("font")?.let { updateFontScale(it.coerceIn(0.7f, 1.6f)) }
+        get<Boolean>("english")?.let { updateEnglish(it) }
+        get<Boolean>("think")?.let { think = it; prefs.edit().putBoolean("think", it).apply() }
+        get<Boolean>("search")?.let { search = it; prefs.edit().putBoolean("search", it).apply() }
+        get<Float>("bgDim")?.let { updateBackgroundDim(it.coerceIn(0f, 1f)) }
+        get<Float>("bgBlur")?.let { updateBackgroundBlur(it.coerceIn(0f, 1f)) }
+        get<Boolean>("autoRead")?.let { autoRead = it; prefs.edit().putBoolean("autoRead", it).apply() }
+        get<String>("voice")?.takeIf { it in Tts.VOICES }?.let { voice = it; prefs.edit().putString("voice", it).apply() }
     }
 
     /** 选好的文档：fileId 为 null 时还在上传、解析 */
