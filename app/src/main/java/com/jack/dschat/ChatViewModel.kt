@@ -155,7 +155,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var saved = c
             if (avatar != null) {
                 val pic = withContext(Dispatchers.IO) {
-                    runCatching { decodeImage(getApplication(), avatar, 1024)?.let { roles.saveAvatar(c.id, it) } }.getOrNull()
+                    runCatching { decodeImage(getApplication(), avatar, CharacterStore.FULL * 2)?.let { roles.saveAvatar(c.id, it) } }.getOrNull()
                 }
                 if (pic == null) onFail() else {
                     saved = saved.copy(hasAvatar = true)
@@ -234,8 +234,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
                     val app = getApplication<Application>()
-                    val pic = avatar?.let { decodeImage(app, it, 1024) }?.let { square(it) }
-                        ?: (if (c.hasAvatar) roles.loadAvatar(c.id) else null)
+                    val pic = avatar?.let { decodeImage(app, it, CharacterStore.FULL * 2) }?.let { square(it) }?.let { if (it.width > CharacterStore.FULL) Bitmap.createScaledBitmap(it, CharacterStore.FULL, CharacterStore.FULL, true) else it }
+                        ?: (if (c.hasAvatar) roles.loadFullAvatar(c.id) else null)
                         ?: letterAvatar(c)
                     val png = java.io.ByteArrayOutputStream().also { pic.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
                     val card = CharacterCard.toPng(png, c)

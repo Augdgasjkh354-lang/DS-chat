@@ -35,21 +35,35 @@ class CharacterStore(context: Context) {
 
     fun loadAvatar(id: String): Bitmap? = avatarFile(id).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) }
 
-    /** 头像裁成正中的正方形、缩到 256 像素存下 */
+    /** 大图：导出角色卡用，边长最多 1024 */
+    fun fullAvatarFile(id: String) = File(avatarDir, "${id}_full.png")
+
+    /** 导出用的头像：有大图用大图，老角色只有 256 的小图 */
+    fun loadFullAvatar(id: String): Bitmap? =
+        fullAvatarFile(id).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) } ?: loadAvatar(id)
+
+    /** 头像裁成正中的正方形：缩到 256 像素存一份显示用，再存一份最大 1024 的导出用 */
     fun saveAvatar(id: String, bitmap: Bitmap): Bitmap {
         val side = min(bitmap.width, bitmap.height)
         val square = Bitmap.createBitmap(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side)
         val small = if (side > AVATAR) Bitmap.createScaledBitmap(square, AVATAR, AVATAR, true) else square
-        val tmp = File(avatarDir, "$id.png.tmp")
-        tmp.outputStream().use { small.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        tmp.renameTo(avatarFile(id))
+        val full = if (side > FULL) Bitmap.createScaledBitmap(square, FULL, FULL, true) else square
+        write(full, fullAvatarFile(id))
+        write(small, avatarFile(id))
         return small
     }
 
-    fun deleteAvatar(id: String) { avatarFile(id).delete() }
+    private fun write(bitmap: Bitmap, file: File) {
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        tmp.renameTo(file)
+    }
+
+    fun deleteAvatar(id: String) { avatarFile(id).delete(); fullAvatarFile(id).delete() }
 
     companion object {
         const val AVATAR = 256
+        const val FULL = 1024
         fun newId() = UUID.randomUUID().toString()
     }
 }
