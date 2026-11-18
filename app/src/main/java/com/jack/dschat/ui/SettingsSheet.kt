@@ -153,7 +153,27 @@ private fun ColumnScope.RootPage(vm: ChatViewModel, onNotReady: () -> Unit, go: 
     }
 
     Section(strings.sectionVoice)
-    Card { SettingRow(AppIcons.Speaker, strings.voice, onClick = onNotReady) }
+    Card {
+        // 音色直接在这一行弹出菜单选，选了念一句试听
+        Box {
+            var menu by remember { mutableStateOf(false) }
+            val names = listOf(strings.voiceFemale, strings.voiceMale)
+            val index = com.jack.dschat.data.Tts.VOICES.indexOf(vm.voice).coerceAtLeast(0)
+            SettingRow(AppIcons.Speaker, strings.voice, value = names[index], trailing = AppIcons.UpDown) { menu = true }
+            Box(Modifier.align(Alignment.TopEnd)) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    names.forEachIndexed { i, name ->
+                        DropdownMenuItem(
+                            text = { Text(name) },
+                            trailingIcon = { if (index == i) Icon(AppIcons.Check, null, Modifier.size(18.dp), tint = colors.accent) },
+                            onClick = { vm.updateVoice(com.jack.dschat.data.Tts.VOICES[i]); menu = false },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    Text(strings.voiceHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
 
     Section(strings.sectionAbout)
     Card {

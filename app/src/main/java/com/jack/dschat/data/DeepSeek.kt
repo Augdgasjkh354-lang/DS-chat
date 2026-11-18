@@ -253,13 +253,13 @@ object DeepSeek {
         }
     }
 
-    private fun open(url: String, apiKey: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+    internal fun open(url: String, apiKey: String) = (URL(url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 15_000
         readTimeout = 30_000
         setRequestProperty("Authorization", "Bearer $apiKey")
     }
 
-    private fun checkStatus(conn: HttpURLConnection) {
+    internal fun checkStatus(conn: HttpURLConnection) {
         val code = conn.responseCode
         if (code in 200..299) return
         val text = conn.errorStream?.bufferedReader()?.readText().orEmpty()

@@ -40,6 +40,8 @@ object AppIcons {
     val Sparkle = line("M12 4l1.8 4.7 4.7 1.8-4.7 1.8L12 17l-1.8-4.7-4.7-1.8 4.7-1.8z M18.5 16v4 M16.5 18h4")
     val Speaker = line("M4 10v4h3l5 4V6L7 10z M15.5 9a4 4 0 0 1 0 6 M18 6.5a7.5 7.5 0 0 1 0 11")
     val SpeakerOff = line("M4 10v4h3l5 4V6L7 10z M16 9.5l5 5 M21 9.5l-5 5")
+    /** 停止朗读：圆里一个方块 */
+    val StopCircle = line("$CIRCLE M9.5 9.5h5v5h-5z")
     val Info = line("$CIRCLE M12 11v5.5 M12 7.8h.01")
     val Doc = line("M6 3.5h9l4 4V20a.5 .5 0 0 1-.5 .5h-12.5a.5 .5 0 0 1-.5-.5V4a.5 .5 0 0 1 .5-.5z M9 9h4 M9 13h6 M9 17h4")
     val Atom = line("M5.64 5.64a9 3.8 45 1 0 12.72 12.72a9 3.8 45 1 0-12.72-12.72z M18.36 5.64a9 3.8 -45 1 0-12.72 12.72a9 3.8 -45 1 0 12.72-12.72z M12 12h.01")

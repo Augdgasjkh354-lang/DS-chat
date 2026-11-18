@@ -35,6 +35,10 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import com.jack.dschat.data.HistoryImport
+import com.jack.dschat.data.Speaker
+import com.jack.dschat.data.Tts
+import android.widget.Toast
+import kotlinx.coroutines.isActive
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
 import com.jack.dschat.data.switchTo
@@ -54,6 +58,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val backgrounds = BackgroundStore(app)
     private val roles = CharacterStore(app)
+    private val speaker = Speaker(app)
     private val images = ImageStore(app)
     private val files = DeepSeekFiles(app.filesDir)
 
@@ -101,6 +106,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var job: Job? = null
+
+    // 朗读
+    private var speakJob: Job? = null
+    /** 正在念的消息 ID（试听音色时是 "sample"） */
+    var speakingId by mutableStateOf<String?>(null)
+        private set
+    /** 新回复写完自动念 */
+    var autoRead by mutableStateOf(prefs.getBoolean("autoRead", false))
+        private set
+    var voice by mutableStateOf(prefs.getString("voice", Tts.DEFAULT_VOICE).takeIf { it in Tts.VOICES } ?: Tts.DEFAULT_VOICE)
+        private set
 
     val current: Conversation? get() = conversations.firstOrNull { it.id == currentId }
 
@@ -405,13 +421,74 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun updateBackgroundDim(value: Float) { backgroundDim = value; prefs.edit().putFloat("bgDim", value).apply() }
     fun updateBackgroundBlur(value: Float) { backgroundBlur = value; prefs.edit().putFloat("bgBlur", value).apply() }
 
+    fun toggleAutoRead() {
+        autoRead = !autoRead
+        prefs.edit().putBoolean("autoRead", autoRead).apply()
+        if (!autoRead) stopSpeaking()
+        val strings = if (english) English else Chinese
+        Toast.makeText(getApplication(), if (autoRead) strings.autoReadOn else strings.autoReadOff, Toast.LENGTH_SHORT).show()
+    }
+
+    /** 换音色，顺便念一句试听 */
+    fun updateVoice(v: String) {
+        voice = v
+        prefs.edit().putString("voice", v).apply()
+        speakText("sample", (if (english) English else Chinese).voiceSample)
+    }
+
+    /** 点回复下面的喇叭：没在念就念，正在念就停 */
+    fun toggleSpeak(m: Message) {
+        if (speakingId == m.id) stopSpeaking() else speakText(m.id, m.text)
+    }
+
+    fun stopSpeaking() {
+        speakJob?.cancel()
+        speakJob = null
+        speaker.stop()
+        speakingId = null
+    }
+
+    private fun speakText(id: String, text: String) {
+        stopSpeaking()
+        val strings = if (english) English else Chinese
+        val key = apiKey
+        if (key.isBlank()) {
+            Toast.makeText(getApplication(), strings.noKey, Toast.LENGTH_LONG).show()
+            return
+        }
+        speakingId = id
+        var me: Job? = null
+        me = viewModelScope.launch {
+            try {
+                speaker.speak(key, text, voice)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: DeepSeek.ApiException) {
+                Toast.makeText(getApplication(), strings.speakError(strings.apiError(e.code, e.message.orEmpty())), Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(getApplication(), strings.speakError(strings.networkError), Toast.LENGTH_LONG).show()
+            } finally {
+                // 被新的朗读顶掉时，speakingId 已经是新的那条了，别清掉
+                if (speakJob === me) { speakJob = null; speakingId = null }
+            }
+        }
+        speakJob = me
+    }
+
+    override fun onCleared() {
+        stopSpeaking()
+        super.onCleared()
+    }
+
     fun newChat() {
+        stopSpeaking()
         stop()
         currentId = null
     }
 
     fun open(id: String) {
         if (id == currentId) return
+        stopSpeaking()
         stop()
         currentId = id
     }
@@ -421,6 +498,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val images = pendingImages
         if ((content.isEmpty() && images.isEmpty()) || generating) return
         pendingImages = emptyList()
+        stopSpeaking()
         val now = System.currentTimeMillis()
         val userMessage = Message(UUID.randomUUID().toString(), "user", content, time = now, images = images)
         val id = currentId ?: UUID.randomUUID().toString()
@@ -441,6 +519,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (generating) return
         val last = conversation.messages.lastOrNull() ?: return
         if (conversation.messages.none { it.isUser }) return
+        stopSpeaking()
         // 最后一条是回复：旧的留着当一个版本，新生成的是下一版，可以左右切换
         answer(conversation.id, regenerating = if (last.isUser) null else last)
     }
@@ -588,6 +667,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (regenerating != null) m.finishVersion(previous) else m
                 }
                 save()
+                // 开了自动朗读：好好写完的回复（不是被停掉、没出错）念出来；还停在这个对话才念
+                if (autoRead && isActive && currentId == conversationId) {
+                    conversations.firstOrNull { it.id == conversationId }?.messages?.firstOrNull { it.id == messageId }
+                        ?.takeIf { it.error.isEmpty() && it.text.isNotBlank() }?.let { speakText(it.id, it.text) }
+                }
                 // 角色对话聊长了，悄悄把旧的部分整理进回忆
                 if (role != null) remember(conversationId)
             }

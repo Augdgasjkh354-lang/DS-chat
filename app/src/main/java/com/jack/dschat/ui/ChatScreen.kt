@@ -146,7 +146,10 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit, on
                 Modifier.clip(CircleShape).background(colors.card).border(1.dp, colors.border, CircleShape),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                PlainButton(AppIcons.SpeakerOff, onClick = onNotReady)
+                PlainButton(
+                    if (vm.autoRead) AppIcons.Speaker else AppIcons.SpeakerOff,
+                    tint = if (vm.autoRead) colors.accent else colors.text,
+                ) { vm.toggleAutoRead() }
                 PlainButton(AppIcons.NewChat, onClick = { vm.newChat() })
             }
         }
@@ -398,6 +401,12 @@ private fun AssistantMessage(vm: ChatViewModel, message: Message, isLast: Boolea
                 if (message.text.isNotEmpty()) SmallAction(AppIcons.Copy, strings.copy) {
                     clipboard.setText(AnnotatedString(message.text))
                     Toast.makeText(context, strings.copied, Toast.LENGTH_SHORT).show()
+                }
+                if (message.text.isNotEmpty()) {
+                    val speaking = vm.speakingId == message.id
+                    SmallAction(if (speaking) AppIcons.StopCircle else AppIcons.Speaker, if (speaking) strings.stopReading else strings.readAloud) {
+                        vm.toggleSpeak(message)
+                    }
                 }
                 if (isLast) SmallAction(AppIcons.Refresh, strings.regenerate) { vm.regenerate() }
                 if (isLast && message.versionCount > 1) VersionSwitch(message.active, message.versionCount) { vm.switchVersion(message.id, it) }
