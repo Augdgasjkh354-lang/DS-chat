@@ -131,4 +131,45 @@ class RolesTest {
         assertTrue(input.contains("阿杰：去海边吧"))
         assertTrue(input.contains("小雨：好呀"))
     }
+
+    @Test
+    fun exportedPngCardRoundTrips() {
+        val book = com.jack.dschat.data.Lorebook(
+            name = "学校", scanDepth = 6, recursive = true,
+            entries = listOf(
+                com.jack.dschat.data.LoreEntry("a", keys = listOf("图书馆", "/馆长/i"), secondaryKeys = listOf("晚上"), content = "图书馆九点关门",
+                    comment = "图书馆", selective = true, order = 50, after = true),
+                com.jack.dschat.data.LoreEntry("b", content = "这是一所寄宿学校", constant = true, enabled = false),
+            ),
+        )
+        val c = Character("x", "小雨", description = "同桌\n\"引号\"", personality = "开朗", scenario = "放学后", greeting = "嘿",
+            examples = "<START>", instructions = "保持轻松", creativity = 1.6f, book = book)
+        // 原图里已经有一张旧卡，导出时要被换掉
+        val bytes = CharacterCard.toPng(png(text("chara", v2), text("ccv3", v2)), c)
+        assertEquals(1, Regex("ccv3").findAll(String(bytes, Charsets.ISO_8859_1)).count())
+        val back = CharacterCard.parse(bytes, "bad")
+        assertEquals(c.copy(id = "", book = back.book), back)
+        assertEquals("学校", back.book.name)
+        assertEquals(6, back.book.scanDepth)
+        assertTrue(back.book.recursive)
+        assertEquals(book.entries.map { it.copy(id = "") }, back.book.entries.map { it.copy(id = "") })
+        // V2 那份也能单独读
+        val v2Json = Json.parseToJsonElement(CharacterCard.toJson(c, v3 = false)).jsonObject
+        assertEquals("chara_card_v2", v2Json["spec"]!!.jsonPrimitive.content)
+        assertEquals("小雨", v2Json["name"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun exportedWorldInfoRoundTrips() {
+        val book = com.jack.dschat.data.Lorebook(entries = listOf(
+            com.jack.dschat.data.LoreEntry("a", keys = listOf("魔法"), content = "魔法要念咒", order = 7, after = true, caseSensitive = true),
+            com.jack.dschat.data.LoreEntry("b", keys = listOf("龙"), content = "龙住在北山", enabled = false),
+        ))
+        val text = com.jack.dschat.data.Lore.worldInfo(book, "世界")
+        val root = Json.parseToJsonElement(text).jsonObject
+        assertEquals("世界", root["name"]!!.jsonPrimitive.content)
+        assertTrue(root["entries"]!!.jsonObject.containsKey("0"))
+        val back = com.jack.dschat.data.Lore.parseFile(text.toByteArray(), "bad")
+        assertEquals(book.entries.map { it.copy(id = "") }, back.entries.map { it.copy(id = "") })
+    }
 }

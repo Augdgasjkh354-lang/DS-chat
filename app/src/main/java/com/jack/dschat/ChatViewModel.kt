@@ -30,6 +30,10 @@ import com.jack.dschat.data.RoleMemory
 import com.jack.dschat.data.RolePrompt
 import com.jack.dschat.data.decodeImage
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
 import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Message
 import com.jack.dschat.data.titleFrom
@@ -218,6 +222,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 onFailure = { e -> onResult(null, (e as? CardException)?.message ?: strings.notALore) },
             )
         }
+    }
+
+    /**
+     * 把角色导出成酒馆 PNG 角色卡，写到用户选的位置。图是头像（avatar 是编辑页里刚选、还没保存的图），
+     * 没头像就画一张底色加名字首字的图。世界书跟着卡一起
+     */
+    fun exportCard(c: Character, avatar: Uri?, target: Uri, onResult: (Boolean, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    val pic = avatar?.let { decodeImage(app, it, 1024) }?.let { square(it) }
+                        ?: (if (c.hasAvatar) roles.loadAvatar(c.id) else null)
+                        ?: letterAvatar(c)
+                    val png = java.io.ByteArrayOutputStream().also { pic.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                    val card = CharacterCard.toPng(png, c)
+                    app.contentResolver.openOutputStream(target, "wt")?.use { it.write(card) } ?: error("no output")
+                }.isSuccess
+            }
+            onResult(ok, if (ok) strings.cardExported(c.name) else strings.exportFailed)
+        }
+    }
+
+    /** 把世界书导出成酒馆的世界书 JSON */
+    fun exportLorebook(book: Lorebook, name: String, target: Uri, onResult: (Boolean, String) -> Unit) {
+        val strings = if (english) English else Chinese
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openOutputStream(target, "wt")
+                        ?.use { it.write(Lore.worldInfo(book, name).toByteArray()) } ?: error("no output")
+                }.isSuccess
+            }
+            onResult(ok, if (ok) strings.loreExported(book.entries.size) else strings.exportFailed)
+        }
+    }
+
+    private fun square(b: Bitmap): Bitmap {
+        val side = minOf(b.width, b.height)
+        return Bitmap.createBitmap(b, (b.width - side) / 2, (b.height - side) / 2, side, side)
+    }
+
+    /** 没头像的角色：512 像素的底色方图，正中写名字的第一个字 */
+    private fun letterAvatar(c: Character): Bitmap {
+        val size = 512
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(c.color.toInt())
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = size * 0.45f
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+        val y = size / 2f - (paint.descent() + paint.ascent()) / 2
+        canvas.drawText(c.name.take(1).ifEmpty { "?" }, size / 2f, y, paint)
+        return bmp
     }
 
     /** 没头像的角色用的底色，按 ID 挑一个 */

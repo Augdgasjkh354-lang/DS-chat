@@ -265,10 +265,19 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
                     lore = -1
                 },
             )
-        } else LoreList(vm, book, onChange = { book = it }, onOpen = { lore = it }, onDone = { lore = null })
+        } else LoreList(vm, book, name.trim(), onChange = { book = it }, onOpen = { lore = it }, onDone = { lore = null })
         return
     }
     val draft = (original ?: Character(id, "", color = vm.palette(id), createdAt = System.currentTimeMillis())).copy(name = name.ifBlank { "?" })
+    // 编辑页上现在的样子（没保存的改动也算）
+    fun edited() = draft.copy(
+        name = name.trim(), description = desc.trim(), greeting = greeting.trim(), personality = personality.trim(),
+        scenario = scenario.trim(), examples = examples.trim(), instructions = instructions.trim(), creativity = creativity,
+        book = book,
+    )
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        if (uri != null) vm.exportCard(edited(), avatar, uri) { _, text -> Toast.makeText(context, text, Toast.LENGTH_SHORT).show() }
+    }
 
     // 头像：点一下从相册换
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -336,14 +345,7 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
         Text(
             strings.save, color = if (name.isNotBlank()) colors.accent else colors.sub, fontSize = 17.sp,
             modifier = Modifier.fillMaxWidth().clickable(enabled = name.isNotBlank()) {
-                vm.saveCharacter(
-                    draft.copy(
-                        name = name.trim(), description = desc.trim(), greeting = greeting.trim(), personality = personality.trim(),
-                        scenario = scenario.trim(), examples = examples.trim(), instructions = instructions.trim(), creativity = creativity,
-                        book = book,
-                    ),
-                    avatar,
-                ) { Toast.makeText(context, strings.imageFailed, Toast.LENGTH_SHORT).show() }
+                vm.saveCharacter(edited(), avatar) { Toast.makeText(context, strings.imageFailed, Toast.LENGTH_SHORT).show() }
                 onDone()
             }.padding(horizontal = 20.dp, vertical = 16.dp),
         )
@@ -354,6 +356,13 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
                 modifier = Modifier.fillMaxWidth().clickable { vm.startRoleChat(original); onDone() }.padding(horizontal = 20.dp, vertical = 16.dp),
             )
         }
+    }
+    if (name.isNotBlank()) {
+        Spacer(Modifier.height(16.dp))
+        Card {
+            SettingRow(AppIcons.Export, strings.exportCard) { exporter.launch(name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_") + ".png") }
+        }
+        Text(strings.exportCardHint, color = colors.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
     }
     if (original != null) {
         Spacer(Modifier.height(16.dp))
@@ -377,7 +386,7 @@ private fun ColumnScope.RoleEditor(vm: ChatViewModel, original: Character?, setB
 
 /** 世界书列表：每条一行，右边开关启用；底下新建、导入 */
 @Composable
-private fun ColumnScope.LoreList(vm: ChatViewModel, book: Lorebook, onChange: (Lorebook) -> Unit, onOpen: (Int) -> Unit, onDone: () -> Unit) {
+private fun ColumnScope.LoreList(vm: ChatViewModel, book: Lorebook, roleName: String, onChange: (Lorebook) -> Unit, onOpen: (Int) -> Unit, onDone: () -> Unit) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     val context = LocalContext.current
@@ -386,6 +395,9 @@ private fun ColumnScope.LoreList(vm: ChatViewModel, book: Lorebook, onChange: (L
             if (read != null) onChange(book.copy(entries = book.entries + read.entries))
             Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
         }
+    }
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) vm.exportLorebook(book, roleName, uri) { _, text -> Toast.makeText(context, text, Toast.LENGTH_SHORT).show() }
     }
     Text(strings.lorebook, color = colors.text, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
     Text(strings.loreHint, color = colors.sub, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp))
@@ -425,6 +437,12 @@ private fun ColumnScope.LoreList(vm: ChatViewModel, book: Lorebook, onChange: (L
         Divider()
         SettingRow(AppIcons.Import, strings.importLore) {
             picker.launch(arrayOf("application/json", "image/png", "application/octet-stream", "text/plain"))
+        }
+        if (book.entries.isNotEmpty()) {
+            Divider()
+            SettingRow(AppIcons.Export, strings.exportLore) {
+                exporter.launch(book.name.ifBlank { roleName.ifBlank { strings.lorebook } } + ".json")
+            }
         }
     }
     Text(strings.importLoreHint, color = colors.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 16.dp, top = 8.dp))

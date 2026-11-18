@@ -6,9 +6,16 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import java.io.ByteArrayOutputStream
 import java.util.Base64
+import java.util.zip.CRC32
 import java.util.zip.InflaterInputStream
 
 /** 一个可以扮演的角色。字段和「酒馆」（SillyTavern）角色卡对得上，导入导出不丢东西 */
@@ -116,7 +123,92 @@ object CharacterCard {
             },
             examples = f("mes_example").ifEmpty { f("example_dialogue") },
             instructions = instructions,
+            creativity = ((data["extensions"] as? JsonObject)?.get(EXT) as? JsonObject)?.let { (it["creativity"] as? JsonPrimitive)?.contentOrNull?.toFloatOrNull() }
+                ?.coerceIn(0f, 2f) ?: Character.DEFAULT_CREATIVITY,
         )
+    }
+
+    /** 本 App 自己的扩展字段（创意度），放在卡的 extensions 里，别的软件会原样保留 */
+    private const val EXT = "dschat"
+
+    /**
+     * 角色写成酒馆卡 JSON。v3 = true 是 chara_card_v3，否则 chara_card_v2；
+     * 最外层同时放一份 V1 字段，老软件也认得。世界书放在 data.character_book
+     */
+    fun toJson(c: Character, v3: Boolean): String {
+        val data = buildJsonObject {
+            put("name", c.name)
+            put("description", c.description)
+            put("personality", c.personality)
+            put("scenario", c.scenario)
+            put("first_mes", c.greeting)
+            put("mes_example", c.examples)
+            put("creator_notes", "")
+            put("system_prompt", c.instructions)
+            put("post_history_instructions", "")
+            putJsonArray("alternate_greetings") {}
+            putJsonArray("tags") {}
+            put("creator", "")
+            put("character_version", "")
+            putJsonObject("extensions") { putJsonObject(EXT) { put("creativity", c.creativity) } }
+            if (c.book.entries.isNotEmpty()) put("character_book", Lore.cardBook(c.book, c.name))
+            if (v3) {
+                putJsonArray("group_only_greetings") {}
+                putJsonArray("assets") { add(buildJsonObject { put("type", "icon"); put("uri", "ccdefault:"); put("name", "main"); put("ext", "png") }) }
+            }
+        }
+        return buildJsonObject {
+            put("spec", if (v3) "chara_card_v3" else "chara_card_v2")
+            put("spec_version", if (v3) "3.0" else "2.0")
+            if (!v3) {
+                put("name", c.name); put("description", c.description); put("personality", c.personality)
+                put("scenario", c.scenario); put("first_mes", c.greeting); put("mes_example", c.examples)
+            }
+            put("data", data)
+        }.toString()
+    }
+
+    /**
+     * 把角色藏进一张 PNG：去掉图里原来的 chara / ccv3 块，在 IEND 前加两个 tEXt 块（V2 的 chara 和 V3 的 ccv3，
+     * 内容是卡片 JSON 的 base64）。图片本身不变
+     */
+    fun toPng(image: ByteArray, c: Character): ByteArray {
+        require(isPng(image))
+        val out = ByteArrayOutputStream(image.size + 4096)
+        out.write(image, 0, 8)
+        var pos = 8
+        var ended = false
+        while (pos + 12 <= image.size) {
+            val len = int32(image, pos)
+            if (len < 0 || pos + 12 + len > image.size) break
+            val type = String(image, pos + 4, 4, Charsets.ISO_8859_1)
+            if (type == "IEND") {
+                for ((key, v3) in listOf("chara" to false, "ccv3" to true)) {
+                    val body = key + "\u0000" + Base64.getEncoder().encodeToString(toJson(c, v3).toByteArray(Charsets.UTF_8))
+                    writeChunk(out, "tEXt", body.toByteArray(Charsets.ISO_8859_1))
+                }
+                out.write(image, pos, 12 + len)
+                ended = true
+                break
+            }
+            val key = (type == "tEXt" || type == "zTXt" || type == "iTXt") &&
+                textChunk(type, image.copyOfRange(pos + 8, pos + 8 + len))?.first.let { it == "chara" || it == "ccv3" }
+            if (!key) out.write(image, pos, 12 + len)
+            pos += 12 + len
+        }
+        require(ended) { "PNG 没有 IEND" }
+        return out.toByteArray()
+    }
+
+    private fun int32(b: ByteArray, p: Int) = ((b[p].toInt() and 0xFF) shl 24) or ((b[p + 1].toInt() and 0xFF) shl 16) or
+        ((b[p + 2].toInt() and 0xFF) shl 8) or (b[p + 3].toInt() and 0xFF)
+
+    private fun writeChunk(out: ByteArrayOutputStream, type: String, data: ByteArray) {
+        fun int(v: Long) = out.write(byteArrayOf((v shr 24).toByte(), (v shr 16).toByte(), (v shr 8).toByte(), v.toByte()))
+        val typeBytes = type.toByteArray(Charsets.ISO_8859_1)
+        int(data.size.toLong())
+        out.write(typeBytes); out.write(data)
+        int(CRC32().apply { update(typeBytes); update(data) }.value)
     }
 
     /** 从 PNG 的文字块里找卡片 JSON；V3（ccv3）优先于 V2（chara） */
@@ -124,8 +216,7 @@ object CharacterCard {
         val found = HashMap<String, String>()
         var pos = 8
         while (pos + 8 <= bytes.size) {
-            val len = ((bytes[pos].toInt() and 0xFF) shl 24) or ((bytes[pos + 1].toInt() and 0xFF) shl 16) or
-                ((bytes[pos + 2].toInt() and 0xFF) shl 8) or (bytes[pos + 3].toInt() and 0xFF)
+            val len = int32(bytes, pos)
             if (len < 0 || pos + 12 + len > bytes.size) break
             val type = String(bytes, pos + 4, 4, Charsets.ISO_8859_1)
             val data = bytes.copyOfRange(pos + 8, pos + 8 + len)
@@ -234,6 +325,63 @@ object Lore {
             ?: root["character_book"] as? JsonObject ?: root
         return parseBook(book)?.takeIf { it.entries.isNotEmpty() } ?: throw CardException(notABook)
     }
+
+    /** 写成角色卡里的 character_book（V2 / V3 格式） */
+    fun cardBook(book: Lorebook, fallbackName: String = ""): JsonObject = buildJsonObject {
+        put("name", book.name.ifBlank { fallbackName })
+        put("scan_depth", book.scanDepth)
+        if (book.tokenBudget > 0) put("token_budget", book.tokenBudget)
+        put("recursive_scanning", book.recursive)
+        putJsonObject("extensions") {}
+        putJsonArray("entries") {
+            book.entries.forEachIndexed { i, e ->
+                add(buildJsonObject {
+                    put("id", i)
+                    put("keys", strings(e.keys))
+                    put("secondary_keys", strings(e.secondaryKeys))
+                    put("comment", e.comment)
+                    put("name", e.comment)
+                    put("content", e.content)
+                    put("constant", e.constant)
+                    put("selective", e.selective)
+                    put("case_sensitive", e.caseSensitive)
+                    put("insertion_order", e.order)
+                    put("priority", e.order)
+                    put("enabled", e.enabled)
+                    put("position", if (e.after) "after_char" else "before_char")
+                    putJsonObject("extensions") { put("position", if (e.after) 1 else 0) }
+                })
+            }
+        }
+    }
+
+    /** 写成酒馆单独的世界书文件：entries 是以编号为键的对象 */
+    fun worldInfo(book: Lorebook, fallbackName: String = ""): String = buildJsonObject {
+        put("name", book.name.ifBlank { fallbackName })
+        put("scan_depth", book.scanDepth)
+        if (book.tokenBudget > 0) put("token_budget", book.tokenBudget)
+        put("recursive_scanning", book.recursive)
+        putJsonObject("entries") {
+            book.entries.forEachIndexed { i, e ->
+                putJsonObject(i.toString()) {
+                    put("uid", i)
+                    put("key", strings(e.keys))
+                    put("keysecondary", strings(e.secondaryKeys))
+                    put("comment", e.comment)
+                    put("content", e.content)
+                    put("constant", e.constant)
+                    put("selective", e.selective)
+                    put("caseSensitive", e.caseSensitive)
+                    put("order", e.order)
+                    put("position", if (e.after) 1 else 0)
+                    put("disable", !e.enabled)
+                    put("displayIndex", i)
+                }
+            }
+        }
+    }.toString()
+
+    private fun strings(list: List<String>): JsonElement = buildJsonArray { list.forEach { add(JsonPrimitive(it)) } }
 
     /** 关键词有没有出现在 text 里；/…/flags 按正则 */
     fun matches(key: String, text: String, caseSensitive: Boolean): Boolean {

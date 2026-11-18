@@ -51,6 +51,8 @@ object AppIcons {
     val Mask = line("M5 5.5c4.5-1.5 9.5-1.5 14 0v5.5a7 7 0 0 1-14 0z M9 10.5h1.5 M13.5 10.5H15 M9.5 14.5c1.5 1.2 3.5 1.2 5 0")
     /** 导入：往下的箭头落进托盘 */
     val Import = line("M12 4v11 M7.5 10.5L12 15l4.5-4.5 M5 19h14")
+    /** 导出：箭头从托盘往上出去 */
+    val Export = line("M12 15V4 M7.5 8.5L12 4l4.5 4.5 M5 19h14")
     val Copy = line("M9 9h10v11H9z M5 15V4h10")
     val Refresh = line("M19 12a7 7 0 1 1-2.1-5 M19 4v4h-4")
     val Trash = line("M5 7h14 M10 7V4.5h4V7 M7 7l1 13h8l1-13 M10.5 11v5.5 M13.5 11v5.5")
