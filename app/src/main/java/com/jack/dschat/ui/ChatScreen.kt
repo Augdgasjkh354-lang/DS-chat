@@ -43,6 +43,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import com.jack.dschat.data.Documents
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -281,6 +284,12 @@ private fun UserMessage(message: Message) {
                 message.images.forEach { path ->
                     LocalImage(path, 600, Modifier.size(size).clip(RoundedCornerShape(14.dp)).clickable { viewing = path })
                 }
+            }
+            if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
+        }
+        if (message.files.isNotEmpty()) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                message.files.forEach { f -> FileChip(f.name, Documents.sizeText(f.size)) }
             }
             if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
         }
@@ -548,7 +557,11 @@ private fun InputPanel(vm: ChatViewModel) {
             Toast.makeText(context, strings.noSpeechService, Toast.LENGTH_LONG).show()
         }
     }
-    val canSend = text.isNotBlank() || vm.pendingImages.isNotEmpty()
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        vm.addFiles(uris) { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+    }
+    var addMenu by remember { mutableStateOf(false) }
+    val canSend = (text.isNotBlank() || vm.pendingImages.isNotEmpty() || vm.pendingFiles.isNotEmpty()) && !vm.uploadingFiles
 
     Column(
         Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).fillMaxWidth()
@@ -573,6 +586,17 @@ private fun InputPanel(vm: ChatViewModel) {
                 if (vm.importingImages) Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(colors.group), contentAlignment = Alignment.Center) { TypingDots() }
             }
         }
+        // 选好的文档：一排小卡片，还在解析的显示「正在解析…」
+        if (vm.pendingFiles.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                vm.pendingFiles.forEach { f ->
+                    FileChip(f.name, if (f.fileId == null) strings.parsing else Documents.sizeText(f.size), busy = f.fileId == null) { vm.removeFile(f.key) }
+                }
+            }
+        }
         BasicTextField(
             value = text,
             onValueChange = { text = it },
@@ -594,13 +618,29 @@ private fun InputPanel(vm: ChatViewModel) {
                 Chip(AppIcons.Globe, strings.smartSearch, vm.searchOn, Modifier.weight(1f, fill = false)) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); vm.toggleSearch() }
             }
             Spacer(Modifier.width(8.dp))
-            Icon(
-                AppIcons.PlusCircle, strings.addImage,
-                Modifier.size(40.dp).clip(CircleShape).clickable {
-                    pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }.padding(5.dp),
-                tint = colors.text,
-            )
+            // 加号弹出小菜单：图片 / 文件
+            Box {
+                Icon(
+                    AppIcons.PlusCircle, strings.addImage,
+                    Modifier.size(40.dp).clip(CircleShape).clickable { addMenu = true }.padding(5.dp),
+                    tint = colors.text,
+                )
+                DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(strings.pickPhotos) },
+                        leadingIcon = { Icon(AppIcons.Image, null, Modifier.size(20.dp)) },
+                        onClick = {
+                            addMenu = false
+                            pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(strings.pickFile) },
+                        leadingIcon = { Icon(AppIcons.Doc, null, Modifier.size(20.dp)) },
+                        onClick = { addMenu = false; pickFiles.launch(arrayOf("*/*")) },
+                    )
+                }
+            }
             Spacer(Modifier.width(2.dp))
             // 右下角的按钮：生成中是停止，有字是发送，否则是语音；切换时淡入淡出
             Crossfade(if (vm.generating) 0 else if (canSend) 1 else 2, label = "action") { state ->
@@ -652,6 +692,30 @@ private fun Chip(icon: ImageVector, label: String, active: Boolean, modifier: Mo
         Icon(icon, null, Modifier.size(18.dp), tint = content)
         Spacer(Modifier.width(5.dp))
         Text(label, color = content, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 一个文档：图标、文件名、大小（或「正在解析…」）；onRemove 不为 null 时右边有叉 */
+@Composable
+private fun FileChip(name: String, detail: String, busy: Boolean = false, onRemove: (() -> Unit)? = null) {
+    val colors = LocalColors.current
+    val strings = LocalStrings.current
+    Row(
+        Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).background(colors.group)
+            .padding(start = 10.dp, end = if (onRemove != null) 4.dp else 12.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(colors.accentBg), contentAlignment = Alignment.Center) {
+            Text(Documents.extension(name).uppercase().take(4).ifEmpty { "DOC" }, color = colors.accent, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        }
+        Column(Modifier.padding(start = 8.dp).weight(1f, fill = false)) {
+            Text(name, color = colors.text, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (detail.isNotEmpty()) Text(detail, color = if (busy) colors.accent else colors.sub, fontSize = 12.sp, maxLines = 1)
+        }
+        if (onRemove != null) Icon(
+            AppIcons.Close, strings.removeImage,
+            Modifier.padding(start = 4.dp).size(28.dp).clip(CircleShape).clickable(onClick = onRemove).padding(7.dp), tint = colors.sub,
+        )
     }
 }
 

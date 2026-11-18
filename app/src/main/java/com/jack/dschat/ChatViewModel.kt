@@ -36,6 +36,9 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import com.jack.dschat.data.HistoryImport
 import com.jack.dschat.data.Speaker
+import com.jack.dschat.data.Attachment
+import com.jack.dschat.data.Documents
+import android.provider.OpenableColumns
 import com.jack.dschat.data.Tts
 import android.widget.Toast
 import kotlinx.coroutines.isActive
@@ -496,15 +499,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val content = text.trim()
         val images = pendingImages
-        if ((content.isEmpty() && images.isEmpty()) || generating) return
+        val files = pendingFiles.mapNotNull { p -> p.fileId?.let { Attachment(it, p.name, p.size) } }
+        if ((content.isEmpty() && images.isEmpty() && files.isEmpty()) || generating || uploadingFiles) return
         pendingImages = emptyList()
+        pendingFiles = emptyList()
         stopSpeaking()
         val now = System.currentTimeMillis()
-        val userMessage = Message(UUID.randomUUID().toString(), "user", content, time = now, images = images)
+        val userMessage = Message(UUID.randomUUID().toString(), "user", content, time = now, images = images, files = files)
         val id = currentId ?: UUID.randomUUID().toString()
         val existing = conversations.firstOrNull { it.id == id }
         conversations = if (existing == null) {
-            val title = titleFrom(content).ifEmpty { (if (english) English else Chinese).imageTitle }
+            val title = titleFrom(content).ifEmpty { files.firstOrNull()?.name ?: (if (english) English else Chinese).imageTitle }
             listOf(Conversation(id, title, now, listOf(userMessage))) + conversations
         } else {
             conversations.map { if (it.id == id) it.copy(updatedAt = now, messages = it.messages + userMessage) else it }
@@ -719,6 +724,76 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun deleteImagesOf(list: List<Conversation>) {
         val paths = list.flatMap { c -> c.messages.flatMap { it.images } }
         if (paths.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { images.delete(paths) }
+        // 发过的文档在 DeepSeek 那边也删掉
+        val ids = list.flatMap { c -> c.messages.flatMap { m -> m.files.map { it.fileId } } }.distinct()
+        val key = apiKey
+        if (ids.isNotEmpty() && key.isNotBlank()) viewModelScope.launch(Dispatchers.IO) { ids.forEach { Documents.delete(key, it) } }
+    }
+
+    /** 选好的文档：fileId 为 null 时还在上传、解析 */
+    data class PendingFile(val key: String, val name: String, val size: Long, val fileId: String? = null)
+
+    var pendingFiles by mutableStateOf(listOf<PendingFile>())
+        private set
+    val uploadingFiles: Boolean get() = pendingFiles.any { it.fileId == null }
+
+    /** 选了文档：马上传给 DeepSeek 解析（会等解析完），好了才能发。onMessage 给出错时的说明 */
+    fun addFiles(uris: List<Uri>, onMessage: (String) -> Unit) {
+        val strings = if (english) English else Chinese
+        val key = apiKey
+        if (uris.isEmpty()) return
+        if (key.isBlank()) return onMessage(strings.noKey)
+        val resolver = getApplication<Application>().contentResolver
+        val room = Documents.MAX_PER_MESSAGE - pendingFiles.size
+        if (room <= 0 || uris.size > room) onMessage(strings.tooManyFiles(Documents.MAX_PER_MESSAGE))
+        for (uri in uris.take(room.coerceAtLeast(0))) {
+            var name = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
+            var size = -1L
+            runCatching {
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        c.getString(0)?.let { name = it }
+                        if (!c.isNull(1)) size = c.getLong(1)
+                    }
+                }
+            }
+            val purpose = Documents.purpose(name)
+            if (purpose == null) { onMessage(strings.unsupportedFile(name)); continue }
+            if (size > Documents.maxSize(purpose)) { onMessage(strings.fileTooBig(name, Documents.maxSize(purpose) / 1024 / 1024)); continue }
+            val pending = PendingFile(UUID.randomUUID().toString(), name, size.coerceAtLeast(0))
+            pendingFiles = pendingFiles + pending
+            viewModelScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val input = resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException(name)
+                        input.use { Documents.upload(key, name, purpose, it) }
+                    }
+                }
+                result.fold(
+                    onSuccess = { id ->
+                        if (pendingFiles.any { it.key == pending.key }) {
+                            pendingFiles = pendingFiles.map { if (it.key == pending.key) it.copy(fileId = id) else it }
+                        } else launch(Dispatchers.IO) { Documents.delete(key, id) } // 传的时候已经被移除了
+                    },
+                    onFailure = { e ->
+                        val stillThere = pendingFiles.any { it.key == pending.key }
+                        pendingFiles = pendingFiles.filterNot { it.key == pending.key }
+                        if (stillThere) onMessage(strings.uploadFailed(name, when (e) {
+                            is DeepSeek.ApiException -> strings.uploadError(e.code, e.message.orEmpty())
+                            is java.io.FileNotFoundException -> strings.cantOpenFile
+                            else -> strings.networkError
+                        }))
+                    },
+                )
+            }
+        }
+    }
+
+    fun removeFile(key: String) {
+        val p = pendingFiles.firstOrNull { it.key == key } ?: return
+        pendingFiles = pendingFiles - p
+        val apiKey = apiKey
+        p.fileId?.let { id -> viewModelScope.launch(Dispatchers.IO) { Documents.delete(apiKey, id) } }
     }
 
     /** 选好、还没发出去的图片 */

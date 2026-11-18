@@ -27,6 +27,8 @@ data class Message(
     val noContext: Boolean = false,
     /** 用户发的图片：应用私有目录里的 JPEG 路径 */
     val images: List<String> = emptyList(),
+    /** 用户发的文档：已经传到 DeepSeek、解析好的文件 */
+    val files: List<Attachment> = emptyList(),
     /**
      * 回复的所有版本（重新生成过才有，至少两个）；上面那些字段是正在显示的那一版，active 是它的序号。
      * 发给模型的只有正在显示的那一版
@@ -48,6 +50,10 @@ data class Message(
     /** 一共几版（没重新生成过就是 1） */
     val versionCount get() = versions.size.coerceAtLeast(1)
 }
+
+/** 发给模型的一个文档：在 DeepSeek 那边解析好了，之后每轮只发 file_id */
+@Serializable
+data class Attachment(val fileId: String, val name: String, val size: Long = 0)
 
 /** 回复的一个版本 */
 @Serializable

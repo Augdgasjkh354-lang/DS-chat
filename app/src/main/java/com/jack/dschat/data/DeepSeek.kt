@@ -80,7 +80,7 @@ object DeepSeek {
                     if (m.isUser && history.getOrNull(i + 1)?.let { !it.isUser && it.noContext } == true) continue
                     add(buildJsonObject {
                         put("role", m.role)
-                        if (m.isUser && m.images.isNotEmpty()) put("content", userContent(m, image))
+                        if (m.isUser && (m.images.isNotEmpty() || m.files.isNotEmpty())) put("content", userContent(m, image))
                         else put("content", m.text)
                         if (!m.isUser) {
                             val calls = m.toolCalls.takeIf { it.isNotEmpty() }
@@ -103,8 +103,11 @@ object DeepSeek {
             val part = image(path)
             if (part == null) missing++ else add(part)
         }
+        // 文档：解析好的 file_id；文字里列一下文件名，模型好知道「这份」「第二个」说的是哪个
+        for (f in m.files) add(buildJsonObject { put("type", "file"); put("file_id", f.fileId) })
         val note = if (missing > 0) "（有 $missing 张图片已经找不到了，没能发过来）\n" else ""
-        val text = note + m.text
+        val names = if (m.files.isNotEmpty()) "[附件：" + m.files.joinToString("、") { it.name } + "]\n" else ""
+        val text = names + note + m.text
         if (text.isNotBlank()) add(buildJsonObject { put("type", "text"); put("text", text) })
     }
 

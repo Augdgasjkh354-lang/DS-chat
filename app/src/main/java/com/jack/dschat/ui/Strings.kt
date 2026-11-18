@@ -35,6 +35,21 @@ open class Strings : HistoryImport.Texts {
     open val speakNow = "请说话"
     open val noSpeechService = "这台手机没有语音识别服务，可以用输入法自带的语音输入"
     open val removeImage = "移除"
+    open val pickPhotos = "图片"
+    open val pickFile = "文件"
+    open val parsing = "正在解析…"
+    open fun tooManyFiles(n: Int) = "一条消息最多带 $n 个文件"
+    open fun unsupportedFile(name: String) = "「$name」的格式不支持。支持 PDF、Word、PPT、Excel、CSV、EPUB、纯文本和代码文件"
+    open fun fileTooBig(name: String, mb: Long) = "「$name」太大了，最大 $mb MB"
+    open fun uploadFailed(name: String, why: String) = "「$name」传不上去：$why"
+    open val cantOpenFile = "文件打不开"
+    open fun uploadError(code: Int, msg: String) = when (code) {
+        400 -> "解析不了，可能加了密码，或者文件坏了"
+        408, 504 -> "解析超时，文件可能太大了"
+        413 -> "文件太大"
+        429 -> "同时上传的文件太多，稍后再试"
+        else -> apiError(code, msg)
+    }
     open val nextVersion = "下一版"
     open val toBottom = "回到底部"
     open val searchingWeb = "正在联网…"
@@ -236,6 +251,21 @@ object English : Strings() {
     override val speakNow = "Speak now"
     override val noSpeechService = "No speech recognition service on this phone. Try your keyboard's voice input."
     override val removeImage = "Remove"
+    override val pickPhotos = "Photos"
+    override val pickFile = "Files"
+    override val parsing = "Parsing…"
+    override fun tooManyFiles(n: Int) = "Up to $n files per message"
+    override fun unsupportedFile(name: String) = "\"$name\" isn't supported. PDF, Word, PowerPoint, Excel, CSV, EPUB, plain text and code files work"
+    override fun fileTooBig(name: String, mb: Long) = "\"$name\" is too large (max $mb MB)"
+    override fun uploadFailed(name: String, why: String) = "Couldn't upload \"$name\": $why"
+    override val cantOpenFile = "can't open the file"
+    override fun uploadError(code: Int, msg: String) = when (code) {
+        400 -> "can't parse it; it may be password-protected or damaged"
+        408, 504 -> "parsing timed out; the file may be too large"
+        413 -> "the file is too large"
+        429 -> "too many uploads at once; try again shortly"
+        else -> apiError(code, msg)
+    }
     override val nextVersion = "Next version"
     override val toBottom = "Jump to bottom"
     override val searchingWeb = "Going online…"
