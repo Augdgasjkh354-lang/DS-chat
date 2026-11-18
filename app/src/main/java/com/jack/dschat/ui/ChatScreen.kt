@@ -1,5 +1,8 @@
 package com.jack.dschat.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -156,7 +159,7 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNotReady: () -> Unit, on
             }
         }
 
-        InputPanel(vm, onNotReady)
+        InputPanel(vm)
     }
 }
 
@@ -508,7 +511,7 @@ private fun Sources(message: Message) {
 private fun hostOf(url: String) = runCatching { java.net.URI(url).host?.removePrefix("www.") }.getOrNull() ?: url
 
 @Composable
-private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
+private fun InputPanel(vm: ChatViewModel) {
     val colors = LocalColors.current
     val strings = LocalStrings.current
     var text by rememberSaveable { mutableStateOf("") }
@@ -518,6 +521,23 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
     // 系统的照片选择器，不用申请权限；一次最多 9 张
     val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
         vm.addImages(uris) { Toast.makeText(context, strings.imageFailed, Toast.LENGTH_SHORT).show() }
+    }
+    // 语音输入：用手机自带的语音识别（系统弹出说话框），说完的文字接在输入框后面
+    val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { said ->
+            text = if (text.isBlank()) said else text.trimEnd() + (if (vm.english) " " else "") + said
+        }
+    }
+    fun startVoice() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (vm.english) "en-US" else "zh-CN")
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, strings.speakNow)
+        try {
+            speech.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(context, strings.noSpeechService, Toast.LENGTH_LONG).show()
+        }
     }
     val canSend = text.isNotBlank() || vm.pendingImages.isNotEmpty()
 
@@ -591,7 +611,14 @@ private fun InputPanel(vm: ChatViewModel, onNotReady: () -> Unit) {
                             contentAlignment = Alignment.Center,
                         ) { Icon(AppIcons.ArrowUp, null, Modifier.size(20.dp), tint = Color.White) }
 
-                        else -> Icon(AppIcons.VoiceCircle, null, Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onNotReady).padding(5.dp), tint = colors.text)
+                        else -> Icon(
+                            AppIcons.VoiceCircle, strings.voiceInput,
+                            Modifier.size(40.dp).clip(CircleShape).clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                startVoice()
+                            }.padding(5.dp),
+                            tint = colors.text,
+                        )
                     }
                 }
             }
