@@ -38,11 +38,20 @@ open class Strings : HistoryImport.Texts {
     open val pickPhotos = "图片"
     open val pickFile = "文件"
     open val parsing = "正在解析…"
+    open val unzipping = "正在解压…"
     open fun tooManyFiles(n: Int) = "一条消息最多带 $n 个文件"
-    open fun unsupportedFile(name: String) = "「$name」的格式不支持。支持 PDF、Word、PPT、Excel、CSV、EPUB、纯文本和代码文件"
+    open fun unsupportedFile(name: String) = "「$name」的格式不支持。支持 PDF、Word、PPT、Excel、CSV、EPUB、txt、json、Markdown、代码文件和 zip 压缩包"
     open fun fileTooBig(name: String, mb: Long) = "「$name」太大了，最大 $mb MB"
     open fun uploadFailed(name: String, why: String) = "「$name」传不上去：$why"
     open val cantOpenFile = "文件打不开"
+    open fun badZip(name: String) = "「$name」解压不了，可能坏了或者加了密码"
+    open fun zipNothing(name: String) = "「$name」里没有能读的文件"
+    open fun zipSummary(name: String, files: Int, merged: Int, skipped: Int, dropped: Int) = buildString {
+        append("「$name」：上传 $files 个文件")
+        if (merged > 0) append("（$merged 个文本文件合成了一份）")
+        if (skipped > 0) append("，跳过 $skipped 个不支持的")
+        if (dropped > 0) append("，$dropped 个超出数量或大小没放进来")
+    }
     open fun uploadError(code: Int, msg: String) = when (code) {
         400 -> "解析不了，可能加了密码，或者文件坏了"
         408, 504 -> "解析超时，文件可能太大了"
@@ -254,11 +263,20 @@ object English : Strings() {
     override val pickPhotos = "Photos"
     override val pickFile = "Files"
     override val parsing = "Parsing…"
+    override val unzipping = "Unzipping…"
     override fun tooManyFiles(n: Int) = "Up to $n files per message"
-    override fun unsupportedFile(name: String) = "\"$name\" isn't supported. PDF, Word, PowerPoint, Excel, CSV, EPUB, plain text and code files work"
+    override fun unsupportedFile(name: String) = "\"$name\" isn't supported. PDF, Word, PowerPoint, Excel, CSV, EPUB, txt, JSON, Markdown, code and zip files work"
     override fun fileTooBig(name: String, mb: Long) = "\"$name\" is too large (max $mb MB)"
     override fun uploadFailed(name: String, why: String) = "Couldn't upload \"$name\": $why"
     override val cantOpenFile = "can't open the file"
+    override fun badZip(name: String) = "Can't unzip \"$name\"; it may be damaged or encrypted"
+    override fun zipNothing(name: String) = "Nothing readable in \"$name\""
+    override fun zipSummary(name: String, files: Int, merged: Int, skipped: Int, dropped: Int) = buildString {
+        append("\"$name\": uploading $files files")
+        if (merged > 0) append(" ($merged text files merged into one)")
+        if (skipped > 0) append(", skipped $skipped unsupported")
+        if (dropped > 0) append(", $dropped left out (count or size limit)")
+    }
     override fun uploadError(code: Int, msg: String) = when (code) {
         400 -> "can't parse it; it may be password-protected or damaged"
         408, 504 -> "parsing timed out; the file may be too large"

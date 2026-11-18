@@ -49,3 +49,59 @@ class DocumentsTest {
         assertTrue(text.endsWith("总结一下"))
     }
 }
+
+class ZipTest {
+    private fun zip(charset: java.nio.charset.Charset = Charsets.UTF_8, vararg entries: Pair<String, ByteArray>): ByteArray {
+        val bytes = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(bytes, charset).use { z ->
+            for ((name, data) in entries) {
+                z.putNextEntry(java.util.zip.ZipEntry(name)); z.write(data); z.closeEntry()
+            }
+        }
+        return bytes.toByteArray()
+    }
+
+    private fun tmp() = kotlin.io.path.createTempDirectory("zip").toFile()
+
+    @Test
+    fun mergesTextAndKeepsDocumentsSeparate() {
+        val data = zip(
+            Charsets.UTF_8,
+            "proj/README.md" to "# 说明".toByteArray(),
+            "proj/src/Main.kt" to "fun main() {}".toByteArray(),
+            "proj/docs/报告.pdf" to "%PDF-1.4".toByteArray(),
+            "proj/logo.png" to byteArrayOf(1, 2, 3),
+            "__MACOSX/proj/._README.md" to byteArrayOf(0),
+            "proj/.git/config" to "x".toByteArray(),
+            "proj/gbk.txt" to "中文笔记".toByteArray(java.nio.charset.Charset.forName("GBK")),
+            "proj/bin.json" to byteArrayOf(0, 0, 1),
+        )
+        val dir = tmp()
+        val r = Documents.unpackZip({ data.inputStream() }, dir, "proj.zip", 10)
+        assertEquals(3, r.merged)
+        assertEquals(2, r.unsupported) // png、假的 json
+        assertEquals(0, r.dropped)
+        assertEquals(listOf("proj（3 个文本文件）.md", "报告.pdf"), r.files.map { it.name })
+        assertEquals("text_recognition", r.files[1].purpose)
+        val bundle = r.files[0].file.readText()
+        assertTrue(bundle.contains("===== proj/src/Main.kt =====\nfun main() {}"))
+        assertTrue(bundle.contains("中文笔记"))
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun readsGbkFileNamesAndRespectsRoom() {
+        val gbk = java.nio.charset.Charset.forName("GBK")
+        val data = zip(gbk, "资料/一.pdf" to "a".toByteArray(), "资料/二.docx" to "b".toByteArray(), "资料/三.pptx" to "c".toByteArray())
+        val dir = tmp()
+        val r = Documents.unpackZip({ data.inputStream() }, dir, "资料.zip", 2)
+        assertEquals(listOf("一.pdf", "二.docx"), r.files.map { it.name })
+        assertEquals(1, r.dropped)
+        dir.deleteRecursively()
+    }
+
+    @Test(expected = java.util.zip.ZipException::class)
+    fun rejectsNonZip() {
+        Documents.unpackZip({ "not a zip".byteInputStream() }, tmp(), "x.zip", 10)
+    }
+}

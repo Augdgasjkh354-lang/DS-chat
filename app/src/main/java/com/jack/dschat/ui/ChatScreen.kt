@@ -593,7 +593,7 @@ private fun InputPanel(vm: ChatViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 vm.pendingFiles.forEach { f ->
-                    FileChip(f.name, if (f.fileId == null) strings.parsing else Documents.sizeText(f.size), busy = f.fileId == null) { vm.removeFile(f.key) }
+                    FileChip(f.name, if (f.fileId == null) (if (Documents.isZip(f.name)) strings.unzipping else strings.parsing) else Documents.sizeText(f.size), busy = f.fileId == null) { vm.removeFile(f.key) }
                 }
             }
         }

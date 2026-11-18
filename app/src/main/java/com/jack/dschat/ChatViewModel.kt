@@ -757,35 +757,84 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+            if (Documents.isZip(name)) { addZip(uri, name, key, onMessage); continue }
             val purpose = Documents.purpose(name)
             if (purpose == null) { onMessage(strings.unsupportedFile(name)); continue }
             if (size > Documents.maxSize(purpose)) { onMessage(strings.fileTooBig(name, Documents.maxSize(purpose) / 1024 / 1024)); continue }
-            val pending = PendingFile(UUID.randomUUID().toString(), name, size.coerceAtLeast(0))
-            pendingFiles = pendingFiles + pending
-            viewModelScope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        val input = resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException(name)
-                        input.use { Documents.upload(key, name, purpose, it) }
-                    }
-                }
-                result.fold(
-                    onSuccess = { id ->
-                        if (pendingFiles.any { it.key == pending.key }) {
-                            pendingFiles = pendingFiles.map { if (it.key == pending.key) it.copy(fileId = id) else it }
-                        } else launch(Dispatchers.IO) { Documents.delete(key, id) } // 传的时候已经被移除了
-                    },
-                    onFailure = { e ->
-                        val stillThere = pendingFiles.any { it.key == pending.key }
-                        pendingFiles = pendingFiles.filterNot { it.key == pending.key }
-                        if (stillThere) onMessage(strings.uploadFailed(name, when (e) {
-                            is DeepSeek.ApiException -> strings.uploadError(e.code, e.message.orEmpty())
-                            is java.io.FileNotFoundException -> strings.cantOpenFile
-                            else -> strings.networkError
-                        }))
-                    },
-                )
+            upload(key, name, size.coerceAtLeast(0), purpose, onMessage) {
+                resolver.openInputStream(uri) ?: throw java.io.FileNotFoundException(name)
             }
+        }
+    }
+
+    /** 压缩包：先在本机解压（文本合成一份，文档单独），再一个个上传 */
+    private fun addZip(uri: Uri, name: String, key: String, onMessage: (String) -> Unit) {
+        val strings = if (english) English else Chinese
+        val app = getApplication<Application>()
+        val room = Documents.MAX_PER_MESSAGE - pendingFiles.size
+        // 解压时先占个位，显示「正在解压…」
+        val placeholder = PendingFile(UUID.randomUUID().toString(), name, 0)
+        pendingFiles = pendingFiles + placeholder
+        viewModelScope.launch {
+            val dir = java.io.File(app.cacheDir, "zip-" + UUID.randomUUID())
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    Documents.unpackZip({ app.contentResolver.openInputStream(uri) ?: throw java.io.FileNotFoundException(name) }, dir, name, room)
+                }
+            }
+            val wasThere = pendingFiles.any { it.key == placeholder.key }
+            pendingFiles = pendingFiles.filterNot { it.key == placeholder.key }
+            val r = result.getOrElse {
+                dir.deleteRecursively()
+                if (wasThere) onMessage(strings.badZip(name))
+                return@launch
+            }
+            if (!wasThere) { dir.deleteRecursively(); return@launch }
+            if (r.files.isEmpty()) {
+                dir.deleteRecursively()
+                onMessage(strings.zipNothing(name))
+                return@launch
+            }
+            onMessage(strings.zipSummary(name, r.files.size, r.merged, r.unsupported, r.dropped))
+            var left = r.files.size
+            for (f in r.files) {
+                upload(key, f.name, f.file.length(), f.purpose, onMessage, done = {
+                    f.file.delete()
+                    if (--left == 0) dir.deleteRecursively()
+                }) { f.file.inputStream() }
+            }
+        }
+    }
+
+    /** 传一个文件：先放进待发列表（显示「正在解析…」），好了填上 file_id，失败拿掉并说明原因 */
+    private fun upload(
+        key: String, name: String, size: Long, purpose: String, onMessage: (String) -> Unit,
+        done: () -> Unit = {}, open: () -> java.io.InputStream,
+    ) {
+        val strings = if (english) English else Chinese
+        val pending = PendingFile(UUID.randomUUID().toString(), name, size)
+        pendingFiles = pendingFiles + pending
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { open().use { Documents.upload(key, name, purpose, it) } }
+            }
+            done()
+            result.fold(
+                onSuccess = { id ->
+                    if (pendingFiles.any { it.key == pending.key }) {
+                        pendingFiles = pendingFiles.map { if (it.key == pending.key) it.copy(fileId = id) else it }
+                    } else launch(Dispatchers.IO) { Documents.delete(key, id) } // 传的时候已经被移除了
+                },
+                onFailure = { e ->
+                    val stillThere = pendingFiles.any { it.key == pending.key }
+                    pendingFiles = pendingFiles.filterNot { it.key == pending.key }
+                    if (stillThere) onMessage(strings.uploadFailed(name, when (e) {
+                        is DeepSeek.ApiException -> strings.uploadError(e.code, e.message.orEmpty())
+                        is java.io.FileNotFoundException -> strings.cantOpenFile
+                        else -> strings.networkError
+                    }))
+                },
+            )
         }
     }
 

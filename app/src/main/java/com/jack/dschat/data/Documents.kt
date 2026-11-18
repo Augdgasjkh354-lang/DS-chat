@@ -4,7 +4,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.util.zip.ZipException
+import java.util.zip.ZipInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -33,11 +39,157 @@ object Documents {
 
     fun extension(name: String) = name.substringAfterLast('.', "").lowercase()
 
-    /** 按扩展名选解析方式；不认识的返回 null */
+    /** 按扩展名选解析方式；不认识的返回 null（zip 另外处理，见 unpackZip） */
     fun purpose(name: String): String? = when (extension(name)) {
         in PARSED -> "text_recognition"
         in TEXT -> "user_data"
         else -> null
+    }
+
+    fun isZip(name: String) = extension(name) == "zip"
+
+    /** 要服务端转换的二进制格式（表格、电子书）：不能当文字拼起来，单独传 */
+    private val CONVERTED = setOf("xlsx", "xls", "epub", "mobi")
+    /** 没有扩展名但其实是文本的常见文件 */
+    private val TEXT_NAMES = setOf("makefile", "dockerfile", "readme", "license", "changelog", "gemfile", "procfile")
+
+    /** 合并后的文本最多这么大（一次请求里文档文字一共最多 8 MiB，留点给别的） */
+    const val BUNDLE_MAX = 6L * 1024 * 1024
+    /** 防压缩炸弹：解压出来的总量、文件数上限 */
+    private const val UNZIP_MAX = 300L * 1024 * 1024
+    private const val UNZIP_ENTRIES = 5000
+
+    /** 压缩包里拿出来、要上传的一个文件（在 dir 里） */
+    data class Extracted(val name: String, val file: File, val purpose: String)
+
+    data class ZipResult(
+        val files: List<Extracted>,
+        /** 合并进文本合集的文件数 */
+        val merged: Int,
+        /** 格式不支持跳过的 */
+        val unsupported: Int,
+        /** 名额不够、太大没放进来的 */
+        val dropped: Int,
+    )
+
+    /**
+     * 解压一个 zip：文本、代码文件按路径顺序拼成一份「文本合集」（每个文件前面标出路径）；
+     * PDF、Word、PPT、表格、电子书各自单独传。最多 room 个文件，多的算 dropped。
+     * 文件名先按 UTF-8 读，读不了再按 GBK（Windows 中文系统打的包）。open 每次返回一个新的流
+     */
+    fun unpackZip(open: () -> InputStream, dir: File, zipName: String, room: Int): ZipResult {
+        return try {
+            unpack(open, dir, zipName, room, Charsets.UTF_8)
+        } catch (e: IllegalArgumentException) {
+            dir.listFiles()?.forEach { it.delete() }
+            unpack(open, dir, zipName, room, java.nio.charset.Charset.forName("GBK"))
+        }
+    }
+
+    private fun unpack(open: () -> InputStream, dir: File, zipName: String, room: Int, charset: java.nio.charset.Charset): ZipResult {
+        dir.mkdirs()
+        val out = ArrayList<Extracted>()
+        val bundle = StringBuilder()
+        var bundleBytes = 0L
+        var merged = 0
+        var unsupported = 0
+        var dropped = 0
+        var total = 0L
+        var count = 0
+        var any = false
+        // 文本合集占一个名额
+        fun slots() = room - out.size - (if (bundle.isNotEmpty()) 1 else 0)
+        ZipInputStream(open(), charset).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                any = true
+                if (++count > UNZIP_ENTRIES) break
+                if (entry.isDirectory) continue
+                val path = entry.name.replace('\\', '/')
+                val base = path.substringAfterLast('/')
+                // 苹果打包带的 __MACOSX、隐藏文件和隐藏目录（.git 之类）跳过
+                if (path.startsWith("__MACOSX/") || base.isEmpty() || path.split('/').any { it.startsWith(".") && it != "." }) continue
+                val ext = extension(base)
+                val textLike = (purpose(base) == "user_data" && ext !in CONVERTED) || (ext.isEmpty() && base.lowercase() in TEXT_NAMES)
+                val separate = ext in PARSED || ext in CONVERTED
+                if (!textLike && !separate) { unsupported++; continue }
+                if (separate) {
+                    // 大文件直接写到磁盘，不进内存
+                    val p = purpose(base)!!
+                    if (slots() <= 0) { dropped++; continue }
+                    val f = File(dir, "${out.size}-${safeName(base)}")
+                    val size = copyCapped(zip, f, maxSize(p))
+                    if (size < 0) { f.delete(); dropped++; continue }
+                    total += size
+                    if (total > UNZIP_MAX) { f.delete(); dropped++; break }
+                    out += Extracted(base, f, p)
+                    continue
+                }
+                val bytes = readCapped(zip, BUNDLE_MAX)
+                if (bytes == null) { dropped++; continue }
+                total += bytes.size
+                if (total > UNZIP_MAX) { dropped++; break }
+                val text = decodeText(bytes)
+                if (text == null) { unsupported++; continue } // 看着是文本，其实是二进制
+                val piece = "===== $path =====\n" + text.trimEnd() + "\n\n"
+                val pieceBytes = piece.toByteArray().size
+                if (bundle.isEmpty() && slots() <= 0) { dropped++; continue }
+                if (bundleBytes + pieceBytes > BUNDLE_MAX) { dropped++; continue }
+                bundle.append(piece)
+                bundleBytes += pieceBytes
+                merged++
+            }
+        }
+        if (!any) throw ZipException("empty or not a zip")
+        if (bundle.isNotEmpty()) {
+            val name = zipName.substringBeforeLast('.').ifBlank { "zip" } + "（$merged 个文本文件）.md"
+            val f = File(dir, "bundle.md")
+            f.writeText(bundle.toString())
+            out.add(0, Extracted(name, f, "user_data"))
+        }
+        return ZipResult(out, merged, unsupported, dropped)
+    }
+
+    /** 把这一项写进文件，返回字节数；超过 cap 返回 -1 */
+    private fun copyCapped(input: InputStream, file: File, cap: Long): Long {
+        val chunk = ByteArray(64 * 1024)
+        var written = 0L
+        file.outputStream().use { out ->
+            while (true) {
+                val n = input.read(chunk)
+                if (n < 0) break
+                written += n
+                if (written > cap) return -1
+                out.write(chunk, 0, n)
+            }
+        }
+        return written
+    }
+
+    /** 读这一项；超过 cap 返回 null */
+    private fun readCapped(input: InputStream, cap: Long): ByteArray? {
+        val buf = ByteArrayOutputStream()
+        val chunk = ByteArray(64 * 1024)
+        var read = 0L
+        while (true) {
+            val n = input.read(chunk)
+            if (n < 0) break
+            read += n
+            if (read > cap) return null
+            buf.write(chunk, 0, n)
+        }
+        return buf.toByteArray()
+    }
+
+    /** 按 UTF-8 解码，不行再试 GBK；有 NUL 字节的是二进制，返回 null */
+    fun decodeText(bytes: ByteArray): String? {
+        if (bytes.take(8000).any { it == 0.toByte() }) return null
+        for (cs in listOf(Charsets.UTF_8, java.nio.charset.Charset.forName("GBK"))) {
+            val decoder = cs.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
+            val text = runCatching { decoder.decode(ByteBuffer.wrap(bytes)).toString() }.getOrNull() ?: continue
+            return text.removePrefix("\uFEFF")
+        }
+        return null
     }
 
     fun maxSize(purpose: String) = if (purpose == "user_data") MAX_TEXT else MAX_PARSED
